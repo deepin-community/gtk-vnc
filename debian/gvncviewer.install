@@ -1,0 +1,3 @@
+_build/examples/gvncviewer /usr/bin/
+/usr/bin/gvnccapture
+/usr/share/man/man1/gvnccapture.1

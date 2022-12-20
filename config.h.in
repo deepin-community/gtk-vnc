@@ -1,0 +1,41 @@
+
+/* Whether GIO UNIX is available */
+#mesondefine HAVE_GIOUNIX
+
+/* whether pulseaudio is available */
+#mesondefine HAVE_PULSEAUDIO
+
+/* whether Cyrus SASL is available */
+#mesondefine HAVE_SASL
+
+/* whether ucontext coroutine is used */
+#mesondefine WITH_UCONTEXT
+
+/* TLS default priority string */
+#define TLS_PRIORITY "@tls_priority@"
+
+/* GLib logging domain */
+#define G_LOG_DOMAIN "gtk-vnc"
+
+/* Gettext .mo file name */
+#define GETTEXT_PACKAGE "gtk-vnc"
+
+/* Application package name */
+#define PACKAGE "gtk-vnc"
+
+/* TLS default priority string */
+#define TLS_PRIORITY "@tls_priority@"
+
+/* Version string */
+#define VERSION "@version@"
+
+/* Version digits */
+#define VERSION_MAJOR @version_major@
+#define VERSION_MINOR @version_minor@
+#define VERSION_MICRO @version_micro@
+
+/* Config file dir */
+#define SYSCONFDIR "@sysconfdir@"
+
+/* gettext .mo dir */
+#define PACKAGE_LOCALE_DIR "@localedir@"

@@ -1,0 +1,20 @@
+Roadmap for build dependencies:
+-------------------------------
+
+For GTK2 build:
+    - libgtk2.0-dev
+    - python-gtk2-dev (>= 2.0)
+
+For GTK3 build:
+    - libgtk-3-dev
+    - libgirepository1.0-dev
+    - gobject-introspection
+    - libtool
+
+For vala bindings:
+    - valac (>= 0.20)
+
+For audio extension:
+    - libpulse-dev
+
+  -- Updated at 08 Jan 2017, 13:38:00 -0200

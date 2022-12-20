@@ -1,0 +1,59 @@
+   GTK VNC  Readme
+   ===============
+
+gtk-vnc is a project providing client side APIs for the
+RFB protocol / VNC remote desktop technology.
+
+It is built using coroutines allowing it to be completely
+asynchronous while remaining single threaded. It provides
+two core C libraries, libgvnc for interacting with the core
+RFB protocol and libgtk-vnc for a GTK display widget.
+
+Access from non-C languages is available using the GObject
+Introspection system.
+
+For information about the project visit the webpage at:
+
+  https://wiki.gnome.org/Projects/gtk-vnc
+
+To contact developers use the project mailing list at:
+
+  http://mail.gnome.org/mailman/listinfo/gtk-vnc-list
+
+To browse or report bugs, go to our bug tracker page at:
+
+  https://gitlab.gnome.org/GNOME/gtk-vnc/issues
+
+Installation notes
+------------------
+
+ * GTK2/GTK3: The build currently defaults to using GTK3.
+   To enable legacy GTK2 support the flag '--with-gtk=2.0' must
+   be passed to configure.
+
+         ./configure --with-gtk=2.0
+
+   Note that when built against GTK3 the library name for gtk-vnc
+   will become 'gtk-vnc-2.0.so' and the pkg-config file will
+   also be 'gtk-vnc-2.0', rather than 'gtk-vnc-1.0.so' and 'gtk-vnc-1.0'
+   for the GTK2 build.
+
+   The gvnc library is unaffected by GTK2/GTK3 build choice since it
+   only depends on GLib/GIO
+
+ * NetBSD: You must run configure using
+
+    --with-coroutine=gthread
+
+   since any app linking against NetBSD's libpthread.so is
+   forbidden from using swapcontext() calls, which is gtk-vnc's
+   default coroutine impl. For further information see
+
+    https://bugzilla.gnome.org/show_bug.cgi?id=566148
+    http://man.netbsd.org/cgi-bin/man-cgi?pthread++NetBSD-current
+
+ * MinGW: The SASL protocol extension is not available on
+   this platform
+
+
+-- End
