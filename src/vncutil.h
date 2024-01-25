@@ -46,10 +46,3 @@ gboolean vnc_util_check_version(gint major, gint minor, gint micro);
 G_END_DECLS
 
 #endif /* VNC_UTIL_H */
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

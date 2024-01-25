@@ -25,10 +25,3 @@
 #include <vncaudiopulse.h>
 
 #endif
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

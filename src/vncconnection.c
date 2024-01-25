@@ -24,6 +24,7 @@
 #include "vncconnection.h"
 #include "vncconnectionenums.h"
 #include "vncmarshal.h"
+#include "vncbaseframebuffer.h"
 #include "vncutil.h"
 
 #include <string.h>
@@ -56,13 +57,6 @@
 
 #include "dh.h"
 
-#if GCRYPT_VERSION_NUMBER < 0x010600
-#define VNC_INIT_GCRYPT_THREADING
-#else
-#undef VNC_INIT_GCRYPT_THREADING
-#endif
-
-
 #define GTK_VNC_ERROR g_quark_from_static_string("gtk-vnc")
 
 struct wait_queue
@@ -76,6 +70,7 @@ typedef enum {
     VNC_CONNECTION_SERVER_MESSAGE_SET_COLOR_MAP_ENTRIES = 1,
     VNC_CONNECTION_SERVER_MESSAGE_BELL = 2,
     VNC_CONNECTION_SERVER_MESSAGE_SERVER_CUT_TEXT = 3,
+    VNC_CONNECTION_SERVER_MESSAGE_XVP = 250,
     VNC_CONNECTION_SERVER_MESSAGE_QEMU = 255,
 } VncConnectionServerMessage;
 
@@ -97,6 +92,8 @@ typedef enum {
     VNC_CONNECTION_CLIENT_MESSAGE_KEY = 4,
     VNC_CONNECTION_CLIENT_MESSAGE_POINTER = 5,
     VNC_CONNECTION_CLIENT_MESSAGE_CUT_TEXT = 6,
+    VNC_CONNECTION_CLIENT_MESSAGE_XVP = 250,
+    VNC_CONNECTION_CLIENT_MESSAGE_SET_DESKTOP_SIZE = 251,
     VNC_CONNECTION_CLIENT_MESSAGE_QEMU = 255,
 } VncConnectionClientMessage;
 
@@ -110,6 +107,17 @@ typedef enum {
     VNC_CONNECTION_CLIENT_MESSAGE_QEMU_AUDIO_DISABLE = 1,
     VNC_CONNECTION_CLIENT_MESSAGE_QEMU_AUDIO_SET_FORMAT = 2,
 } VncConnectionClientMessageQEMUAudio;
+
+typedef enum {
+    VNC_CONNECTION_XVP_FAIL = 0,
+    VNC_CONNECTION_XVP_INIT = 1,
+} VncConnectionXVPCode;
+
+typedef enum {
+    VNC_CONNECTION_RESIZE_TRIGGER_SERVER = 0,
+    VNC_CONNECTION_RESIZE_TRIGGER_THIS_CLIENT = 1,
+    VNC_CONNECTION_RESIZE_TRIGGER_OTHER_CLIENT = 2,
+} VncConnectionResizeTrigger;
 
 
 typedef void vnc_connection_rich_cursor_blt_func(VncConnection *conn, guint8 *, guint8 *,
@@ -144,9 +152,6 @@ struct g_condition_wait_source
     g_condition_wait_func func;
     gpointer data;
 };
-
-#define VNC_CONNECTION_GET_PRIVATE(obj)                                 \
-    (G_TYPE_INSTANCE_GET_PRIVATE((obj), VNC_TYPE_CONNECTION, VncConnectionPrivate))
 
 
 struct _VncConnectionPrivate
@@ -203,6 +208,7 @@ struct _VncConnectionPrivate
     VncCursor *cursor;
     gboolean absPointer;
     gboolean sharedFlag;
+    gboolean powerControl;
 
     vnc_connection_rich_cursor_blt_func *rich_cursor_blt;
     vnc_connection_tight_compute_predicted_func *tight_compute_predicted;
@@ -238,6 +244,9 @@ struct _VncConnectionPrivate
         guint16 width;
         guint16 height;
     } lastUpdateRequest;
+    gboolean skip_non_incremental;
+
+    gboolean has_resize;
 
     gboolean has_audio;
     gboolean audio_format_pending;
@@ -249,7 +258,7 @@ struct _VncConnectionPrivate
     guint audio_timer;
 };
 
-G_DEFINE_TYPE(VncConnection, vnc_connection, G_TYPE_OBJECT);
+G_DEFINE_TYPE_WITH_PRIVATE(VncConnection, vnc_connection, G_TYPE_OBJECT);
 
 
 enum {
@@ -259,8 +268,11 @@ enum {
     VNC_SERVER_CUT_TEXT,
     VNC_FRAMEBUFFER_UPDATE,
     VNC_DESKTOP_RESIZE,
+    VNC_DESKTOP_RENAME,
     VNC_PIXEL_FORMAT_CHANGED,
     VNC_LED_STATE,
+    VNC_POWER_CONTROL_INITIALIZED,
+    VNC_POWER_CONTROL_FAILED,
 
     VNC_AUTH_FAILURE,
     VNC_AUTH_UNSUPPORTED,
@@ -276,10 +288,7 @@ enum {
     VNC_LAST_SIGNAL,
 };
 
-static guint signals[VNC_LAST_SIGNAL] = { 0, 0, 0, 0,
-                                          0, 0, 0, 0,
-                                          0, 0, 0, 0,
-                                          0, 0, 0 };
+static guint signals[VNC_LAST_SIGNAL] = { 0 };
 
 #define nibhi(a) (((a) >> 4) & 0x0F)
 #define niblo(a) ((a) & 0x0F)
@@ -493,6 +502,7 @@ struct signal_data
         GValueArray *authCred;
         GValueArray *authTypes;
         const char *message;
+        int powerStatus;
     } params;
 };
 
@@ -547,6 +557,13 @@ static gboolean do_vnc_connection_emit_main_context(gpointer opaque)
                       data->params.size.height);
         break;
 
+    case VNC_DESKTOP_RENAME:
+        g_signal_emit(G_OBJECT(data->conn),
+                      signals[data->signum],
+                      0,
+                      data->params.message);
+        break;
+
     case VNC_PIXEL_FORMAT_CHANGED:
         g_signal_emit(G_OBJECT(data->conn),
                       signals[data->signum],
@@ -559,6 +576,18 @@ static gboolean do_vnc_connection_emit_main_context(gpointer opaque)
                       signals[data->signum],
                       0,
                       data->params.ledstate);
+        break;
+
+    case VNC_POWER_CONTROL_INITIALIZED:
+        g_signal_emit(G_OBJECT(data->conn),
+                      signals[data->signum],
+                      0);
+        break;
+
+    case VNC_POWER_CONTROL_FAILED:
+        g_signal_emit(G_OBJECT(data->conn),
+                      signals[data->signum],
+                      0);
         break;
 
     case VNC_AUTH_FAILURE:
@@ -752,9 +781,11 @@ static int vnc_connection_read_wire(VncConnection *conn, void *data, size_t len)
                                NULL, &error);
         if (ret < 0) {
             if (error) {
-                VNC_DEBUG("Read error %s", error->message);
-                if (error->code == G_IO_ERROR_WOULD_BLOCK)
+                if (error->code == G_IO_ERROR_WOULD_BLOCK) {
                     blocking = TRUE;
+                } else {
+                    VNC_DEBUG("Read error %s", error->message);
+                }
                 g_error_free(error);
             } else {
                 VNC_DEBUG("Read error unknown");
@@ -1125,19 +1156,19 @@ static ssize_t vnc_connection_tls_pull(gnutls_transport_ptr_t transport,
     return ret;
 }
 
-static size_t vnc_connection_pixel_size(VncConnection *conn)
+static size_t vnc_connection_pixel_size(VncPixelFormat *fmt)
 {
-    VncConnectionPrivate *priv = conn->priv;
-
-    return priv->fmt.bits_per_pixel / 8;
+    return fmt->bits_per_pixel / 8;
 }
 
 /*
  * Must only be called from the VNC coroutine
  */
-static void vnc_connection_read_pixel(VncConnection *conn, guint8 *pixel)
+static void vnc_connection_read_pixel(VncConnection *conn,
+                                      VncPixelFormat *fmt,
+                                      guint8 *pixel)
 {
-    vnc_connection_read(conn, pixel, vnc_connection_pixel_size(conn));
+    vnc_connection_read(conn, pixel, vnc_connection_pixel_size(fmt));
 }
 
 /*
@@ -1230,47 +1261,6 @@ static void vnc_connection_debug_gnutls_log(int level, const char* str) {
 }
 #endif
 
-#ifdef VNC_INIT_GCRYPT_THREADING
-static int gvnc_tls_mutex_init (void **priv)
-{                                                                             \
-    GMutex *lock = NULL;
-    lock = g_new0(GMutex, 1);
-    *priv = lock;
-    return 0;
-}
-
-static int gvnc_tls_mutex_destroy(void **priv)
-{
-    GMutex *lock = *priv;
-    g_free(lock);
-    return 0;
-}
-
-static int gvnc_tls_mutex_lock(void **priv)
-{
-    GMutex *lock = *priv;
-    g_mutex_lock(lock);
-    return 0;
-}
-
-static int gvnc_tls_mutex_unlock(void **priv)
-{
-    GMutex *lock = *priv;
-    g_mutex_unlock(lock);
-    return 0;
-}
-
-static struct gcry_thread_cbs gvnc_thread_impl = {
-    (GCRY_THREAD_OPTION_PTHREAD | (GCRY_THREAD_OPTION_VERSION << 8)),
-    NULL,
-    gvnc_tls_mutex_init,
-    gvnc_tls_mutex_destroy,
-    gvnc_tls_mutex_lock,
-    gvnc_tls_mutex_unlock,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
-};
-#endif /* VNC_INIT_GCRYPT_THREADING */
-
 
 static gboolean vnc_connection_tls_initialize(void)
 {
@@ -1279,12 +1269,7 @@ static gboolean vnc_connection_tls_initialize(void)
     if (tlsinitialized)
         return TRUE;
 
-    if (g_thread_supported()) {
-#ifdef VNC_INIT_GCRYPT_THREADING
-        gcry_control(GCRYCTL_SET_THREAD_CBS, &gvnc_thread_impl);
-#endif /* VNC_INIT_GCRYPT_THREADING */
-        gcry_check_version(NULL);
-    }
+    gcry_check_version(NULL);
 
     if (gnutls_global_init () < 0)
         return FALSE;
@@ -1487,9 +1472,9 @@ static void vnc_connection_read_pixel_format(VncConnection *conn, VncPixelFormat
 
     vnc_connection_read(conn, pad, 3);
 
-    VNC_DEBUG("Pixel format BPP: %d,  Depth: %d, Byte order: %d, True color: %d\n"
-              "             Mask  red: %3d, green: %3d, blue: %3d\n"
-              "             Shift red: %3d, green: %3d, blue: %3d",
+    VNC_DEBUG("Read pixel format BPP: %d,  Depth: %d, Byte order: %d, True color: %d\n"
+              "                  Mask  red: %3d, green: %3d, blue: %3d\n"
+              "                  Shift red: %3d, green: %3d, blue: %3d",
               fmt->bits_per_pixel, fmt->depth, fmt->byte_order, fmt->true_color_flag,
               fmt->red_max, fmt->green_max, fmt->blue_max,
               fmt->red_shift, fmt->green_shift, fmt->blue_shift);
@@ -1502,7 +1487,7 @@ static void vnc_connection_ledstate_change(VncConnection *conn)
 
     priv->ledstate = vnc_connection_read_u8(conn);
 
-    VNC_DEBUG("LED state: %d\n", priv->ledstate);
+    VNC_DEBUG("LED state: %d", priv->ledstate);
 
     sigdata.params.ledstate = priv->ledstate;
     vnc_connection_emit_main_context(conn, VNC_LED_STATE, &sigdata);
@@ -1545,7 +1530,7 @@ const VncPixelFormat *vnc_connection_get_pixel_format(VncConnection *conn)
 /**
  * vnc_connection_set_shared:
  * @conn: (transfer none): the connection object
- * @sharedFlag: the new sharing state
+ * @shared: the new sharing state
  *
  * Set the shared state for the connection. A TRUE value
  * allow allow this client to co-exist with other existing
@@ -1554,14 +1539,14 @@ const VncPixelFormat *vnc_connection_get_pixel_format(VncConnection *conn)
  *
  * Returns: TRUE if the connection is ok, FALSE if it has an error
  */
-gboolean vnc_connection_set_shared(VncConnection *conn, gboolean sharedFlag)
+gboolean vnc_connection_set_shared(VncConnection *conn, gboolean shared)
 {
     VncConnectionPrivate *priv = conn->priv;
 
     if (vnc_connection_is_open(conn))
         return FALSE;
 
-    priv->sharedFlag = sharedFlag;
+    priv->sharedFlag = shared;
 
     return !vnc_connection_has_error(conn);
 }
@@ -1689,6 +1674,13 @@ gboolean vnc_connection_set_pixel_format(VncConnection *conn,
     vnc_connection_buffered_flush(conn);
 
     memcpy(&priv->fmt, fmt, sizeof(*fmt));
+
+    VNC_DEBUG("Set pixel format BPP: %d,  Depth: %d, Byte order: %d, True color: %d\n"
+              "                 Mask  red: %3d, green: %3d, blue: %3d\n"
+              "                 Shift red: %3d, green: %3d, blue: %3d",
+              fmt->bits_per_pixel, fmt->depth, fmt->byte_order, fmt->true_color_flag,
+              fmt->red_max, fmt->green_max, fmt->blue_max,
+              fmt->red_shift, fmt->green_shift, fmt->blue_shift);
 
     return !vnc_connection_has_error(conn);
 }
@@ -1863,7 +1855,7 @@ gboolean vnc_connection_set_encodings(VncConnection *conn, int n_encoding, gint3
      *
      * So we kill off ZRLE encoding for problematic pixel formats
      */
-    for (i = 0; i < n_encoding; i++)
+    for (i = 0; i < n_encoding; i++) {
         if (priv->fmt.depth == 32 &&
             (priv->fmt.red_max > 255 ||
              priv->fmt.blue_max > 255 ||
@@ -1871,7 +1863,10 @@ gboolean vnc_connection_set_encodings(VncConnection *conn, int n_encoding, gint3
             encoding[i] == VNC_CONNECTION_ENCODING_ZRLE) {
             VNC_DEBUG("Dropping ZRLE encoding for broken pixel format");
             skip_zrle++;
+        } else {
+            VNC_DEBUG("Advertizing encoding '%d' (0x%x)", encoding[i], encoding[i]);
         }
+    }
 
     priv->has_ext_key_event = FALSE;
     priv->has_audio = FALSE;
@@ -1914,6 +1909,11 @@ gboolean vnc_connection_framebuffer_update_request(VncConnection *conn,
     VNC_DEBUG("Requesting framebuffer update at %d,%d size %dx%d, incremental %d",
               x, y, width, height, (int)incremental);
 
+    if (!incremental && priv->skip_non_incremental) {
+        VNC_DEBUG("Blocking non-incremental update request after extended desktop resize");
+        incremental = TRUE;
+    }
+    priv->skip_non_incremental = FALSE;
     priv->lastUpdateRequest.incremental = incremental;
     priv->lastUpdateRequest.x = x;
     priv->lastUpdateRequest.y = y;
@@ -2153,15 +2153,17 @@ static vnc_connection_tight_sum_pixel_func *vnc_connection_tight_sum_pixel_table
 };
 
 static gboolean vnc_connection_validate_boundary(VncConnection *conn,
+                                                 VncFramebuffer *fb,
                                                  guint16 x, guint16 y,
                                                  guint16 width, guint16 height)
 {
-    VncConnectionPrivate *priv = conn->priv;
+    guint16 fbwidth = vnc_framebuffer_get_width(fb);
+    guint16 fbheight = vnc_framebuffer_get_height(fb);
 
-    if ((x + width) > priv->width || (y + height) > priv->height) {
+    if ((x + width) > fbwidth || (y + height) > fbheight) {
         vnc_connection_set_error(conn, "Framebuffer update %dx%d at %d,%d "
                                  "outside boundary %dx%d",
-                                 width, height, x, y, priv->width, priv->height);
+                                 width, height, x, y, fbwidth, fbheight);
     }
 
     return !vnc_connection_has_error(conn);
@@ -2169,81 +2171,83 @@ static gboolean vnc_connection_validate_boundary(VncConnection *conn,
 
 
 static void vnc_connection_raw_update(VncConnection *conn,
+                                      VncFramebuffer *fb,
+                                      VncPixelFormat *fmt,
                                       guint16 x, guint16 y,
                                       guint16 width, guint16 height)
 {
-    VncConnectionPrivate *priv = conn->priv;
-
     /* optimize for perfect match between server/client
        FWIW, in the local case, we ought to be doing a write
        directly from the source framebuffer and a read directly
        into the client framebuffer
     */
-    if (vnc_framebuffer_perfect_format_match(priv->fb)) {
+    if (vnc_framebuffer_perfect_format_match(fb)) {
         int i;
-        int rowstride = vnc_framebuffer_get_rowstride(priv->fb);
-        guint8 *dst = vnc_framebuffer_get_buffer(priv->fb);
+        int rowstride = vnc_framebuffer_get_rowstride(fb);
+        guint8 *dst = vnc_framebuffer_get_buffer(fb);
 
-        dst += (y * rowstride) + (x * (priv->fmt.bits_per_pixel/8));
+        dst += (y * rowstride) + (x * (fmt->bits_per_pixel/8));
 
         for (i = 0; i < height; i++) {
             vnc_connection_read(conn, dst,
-                                width * (priv->fmt.bits_per_pixel/8));
+                                width * (fmt->bits_per_pixel/8));
             dst += rowstride;
         }
     } else {
         guint8 *dst;
         int i;
 
-        dst = g_malloc(width * (priv->fmt.bits_per_pixel / 8));
+        dst = g_malloc(width * (fmt->bits_per_pixel / 8));
         for (i = 0; i < height; i++) {
-            vnc_connection_read(conn, dst, width * (priv->fmt.bits_per_pixel / 8));
-            vnc_framebuffer_blt(priv->fb, dst, 0, x, y + i, width, 1);
+            vnc_connection_read(conn, dst, width * (fmt->bits_per_pixel / 8));
+            vnc_framebuffer_blt(fb, dst, 0, x, y + i, width, 1);
         }
         g_free(dst);
     }
 }
 
 static void vnc_connection_copyrect_update(VncConnection *conn,
+                                           VncFramebuffer *fb,
                                            guint16 dst_x, guint16 dst_y,
                                            guint16 width, guint16 height)
 {
-    VncConnectionPrivate *priv = conn->priv;
     int src_x, src_y;
 
     src_x = vnc_connection_read_u16(conn);
     src_y = vnc_connection_read_u16(conn);
 
-    if (!vnc_connection_validate_boundary(conn, src_x, src_y, width, height))
+    if (!vnc_connection_validate_boundary(conn, fb,
+                                          src_x, src_y, width, height))
         return;
 
-    vnc_framebuffer_copyrect(priv->fb,
+    vnc_framebuffer_copyrect(fb,
                              src_x, src_y,
                              dst_x, dst_y,
                              width, height);
 }
 
 static void vnc_connection_hextile_rect(VncConnection *conn,
+                                        VncFramebuffer *fb,
+                                        VncPixelFormat *fmt,
                                         guint8 flags,
                                         guint16 x, guint16 y,
                                         guint16 width, guint16 height,
                                         guint8 *fg, guint8 *bg)
 {
-    VncConnectionPrivate *priv = conn->priv;
     int i;
 
     if (flags & 0x01) {
-        vnc_connection_raw_update(conn, x, y, width, height);
+        vnc_connection_raw_update(conn, fb, fmt, x, y, width, height);
     } else {
         /* Background Specified */
         if (flags & 0x02)
-            vnc_connection_read_pixel(conn, bg);
+            vnc_connection_read_pixel(conn, fmt, bg);
 
         /* Foreground Specified */
         if (flags & 0x04)
-            vnc_connection_read_pixel(conn, fg);
+            vnc_connection_read_pixel(conn, fmt, fg);
 
-        vnc_framebuffer_fill(priv->fb, bg, x, y, width, height);
+        vnc_framebuffer_fill(fb, bg, x, y, width, height);
 
         /* AnySubrects */
         if (flags & 0x08) {
@@ -2254,16 +2258,17 @@ static void vnc_connection_hextile_rect(VncConnection *conn,
 
                 /* SubrectsColored */
                 if (flags & 0x10)
-                    vnc_connection_read_pixel(conn, fg);
+                    vnc_connection_read_pixel(conn, fmt, fg);
 
                 xy = vnc_connection_read_u8(conn);
                 wh = vnc_connection_read_u8(conn);
 
-                if (!vnc_connection_validate_boundary(conn, x + nibhi(xy), y + niblo(xy),
+                if (!vnc_connection_validate_boundary(conn, fb,
+                                                      x + nibhi(xy), y + niblo(xy),
                                                       nibhi(wh) + 1, niblo(wh) + 1))
                     return;
 
-                vnc_framebuffer_fill(priv->fb, fg,
+                vnc_framebuffer_fill(fb, fg,
                                      x + nibhi(xy), y + niblo(xy),
                                      nibhi(wh) + 1, niblo(wh) + 1);
             }
@@ -2273,6 +2278,8 @@ static void vnc_connection_hextile_rect(VncConnection *conn,
 
 
 static void vnc_connection_hextile_update(VncConnection *conn,
+                                          VncFramebuffer *fb,
+                                          VncPixelFormat *fmt,
                                           guint16 x, guint16 y,
                                           guint16 width, guint16 height)
 {
@@ -2288,7 +2295,7 @@ static void vnc_connection_hextile_update(VncConnection *conn,
             int h = MIN(16, height - j);
 
             flags = vnc_connection_read_u8(conn);
-            vnc_connection_hextile_rect(conn, flags,
+            vnc_connection_hextile_rect(conn, fb, fmt, flags,
                                         x + i, y + j,
                                         w, h,
                                         fg, bg);
@@ -2297,52 +2304,55 @@ static void vnc_connection_hextile_update(VncConnection *conn,
 }
 
 static void vnc_connection_rre_update(VncConnection *conn,
+                                      VncFramebuffer *fb,
+                                      VncPixelFormat *fmt,
                                       guint16 x, guint16 y,
                                       guint16 width, guint16 height)
 {
-    VncConnectionPrivate *priv = conn->priv;
     guint8 bg[4];
     guint32 num;
     guint32 i;
 
     num = vnc_connection_read_u32(conn);
-    vnc_connection_read_pixel(conn, bg);
-    vnc_framebuffer_fill(priv->fb, bg, x, y, width, height);
+    vnc_connection_read_pixel(conn, fmt, bg);
+    vnc_framebuffer_fill(fb, bg, x, y, width, height);
 
     for (i = 0; i < num; i++) {
         guint8 fg[4];
         guint16 sub_x, sub_y, sub_w, sub_h;
 
-        vnc_connection_read_pixel(conn, fg);
+        vnc_connection_read_pixel(conn, fmt, fg);
         sub_x = vnc_connection_read_u16(conn);
         sub_y = vnc_connection_read_u16(conn);
         sub_w = vnc_connection_read_u16(conn);
         sub_h = vnc_connection_read_u16(conn);
 
-        if (!vnc_connection_validate_boundary(conn, x + sub_x, y + sub_y, sub_w, sub_h))
+        if (!vnc_connection_validate_boundary(conn, fb,
+                                              x + sub_x, y + sub_y, sub_w, sub_h))
             break;
 
-        vnc_framebuffer_fill(priv->fb, fg,
+        vnc_framebuffer_fill(fb, fg,
                              x + sub_x, y + sub_y, sub_w, sub_h);
     }
 }
 
 /* CPIXELs are optimized slightly.  32-bit pixel values are packed into 24-bit
  * values. */
-static void vnc_connection_read_cpixel(VncConnection *conn, guint8 *pixel)
+static void vnc_connection_read_cpixel(VncConnection *conn,
+                                       VncPixelFormat *fmt,
+                                       guint8 *pixel)
 {
-    VncConnectionPrivate *priv = conn->priv;
-    int bpp = vnc_connection_pixel_size(conn);
+    int bpp = vnc_connection_pixel_size(fmt);
 
     memset(pixel, 0, bpp);
 
-    if (bpp == 4 && priv->fmt.true_color_flag) {
-        int fitsInMSB = ((priv->fmt.red_shift > 7) &&
-                         (priv->fmt.green_shift > 7) &&
-                         (priv->fmt.blue_shift > 7));
-        int fitsInLSB = (((priv->fmt.red_max << priv->fmt.red_shift) < (1 << 24)) &&
-                         ((priv->fmt.green_max << priv->fmt.green_shift) < (1 << 24)) &&
-                         ((priv->fmt.blue_max << priv->fmt.blue_shift) < (1 << 24)));
+    if (bpp == 4 && fmt->true_color_flag) {
+        int fitsInMSB = ((fmt->red_shift > 7) &&
+                         (fmt->green_shift > 7) &&
+                         (fmt->blue_shift > 7));
+        int fitsInLSB = (((fmt->red_max << fmt->red_shift) < (1 << 24)) &&
+                         ((fmt->green_max << fmt->green_shift) < (1 << 24)) &&
+                         ((fmt->blue_max << fmt->blue_shift) < (1 << 24)));
 
         /*
          * We need to analyse the shifts to see if they fit in 3 bytes,
@@ -2352,8 +2362,8 @@ static void vnc_connection_read_cpixel(VncConnection *conn, guint8 *pixel)
          */
         if (fitsInMSB || fitsInLSB) {
             bpp = 3;
-            if (priv->fmt.depth == 24 &&
-                priv->fmt.byte_order == G_BIG_ENDIAN)
+            if (fmt->depth == 24 &&
+                fmt->byte_order == G_BIG_ENDIAN)
                 pixel++;
         }
     }
@@ -2362,21 +2372,22 @@ static void vnc_connection_read_cpixel(VncConnection *conn, guint8 *pixel)
 }
 
 static void vnc_connection_zrle_update_tile_blit(VncConnection *conn,
+                                                 VncFramebuffer *fb,
+                                                 VncPixelFormat *fmt,
                                                  guint16 x, guint16 y,
                                                  guint16 width, guint16 height)
 {
-    VncConnectionPrivate *priv = conn->priv;
     guint8 *blit_data;
     int i, bpp;
 
     blit_data = g_new0(guint8, 4*64*64);
 
-    bpp = vnc_connection_pixel_size(conn);
+    bpp = vnc_connection_pixel_size(fmt);
 
     for (i = 0; i < width * height; i++)
-        vnc_connection_read_cpixel(conn, blit_data + (i * bpp));
+        vnc_connection_read_cpixel(conn, fmt, blit_data + (i * bpp));
 
-    vnc_framebuffer_blt(priv->fb, blit_data, width * bpp, x, y, width, height);
+    vnc_framebuffer_blt(fb, blit_data, width * bpp, x, y, width, height);
 
     g_free(blit_data);
 }
@@ -2405,6 +2416,8 @@ static guint8 vnc_connection_read_zrle_pi(VncConnection *conn, int palette_size)
 }
 
 static void vnc_connection_zrle_update_tile_palette(VncConnection *conn,
+                                                    VncFramebuffer *fb,
+                                                    VncPixelFormat *fmt,
                                                     guint8 palette_size,
                                                     guint16 x, guint16 y,
                                                     guint16 width, guint16 height)
@@ -2414,7 +2427,7 @@ static void vnc_connection_zrle_update_tile_palette(VncConnection *conn,
     int i, j;
 
     for (i = 0; i < palette_size; i++)
-        vnc_connection_read_cpixel(conn, palette[i]);
+        vnc_connection_read_cpixel(conn, fmt, palette[i]);
 
     for (j = 0; j < height; j++) {
         /* discard any padding bits */
@@ -2423,7 +2436,7 @@ static void vnc_connection_zrle_update_tile_palette(VncConnection *conn,
         for (i = 0; i < width; i++) {
             int ind = vnc_connection_read_zrle_pi(conn, palette_size);
 
-            vnc_framebuffer_set_pixel_at(priv->fb, palette[ind & 0x7F],
+            vnc_framebuffer_set_pixel_at(fb, palette[ind & 0x7F],
                                          x + i, y + j);
         }
     }
@@ -2443,37 +2456,39 @@ static int vnc_connection_read_zrle_rl(VncConnection *conn)
 }
 
 static void vnc_connection_zrle_update_tile_rle(VncConnection *conn,
+                                                VncFramebuffer *fb,
+                                                VncPixelFormat *fmt,
                                                 guint16 x, guint16 y,
                                                 guint16 width, guint16 height)
 {
-    VncConnectionPrivate *priv = conn->priv;
     int i, j, rl = 0;
     guint8 pixel[4];
 
     for (j = 0; j < height; j++) {
         for (i = 0; i < width; i++) {
             if (rl == 0) {
-                vnc_connection_read_cpixel(conn, pixel);
+                vnc_connection_read_cpixel(conn, fmt, pixel);
                 rl = vnc_connection_read_zrle_rl(conn);
             }
-            vnc_framebuffer_set_pixel_at(priv->fb, pixel, x + i, y + j);
+            vnc_framebuffer_set_pixel_at(fb, pixel, x + i, y + j);
             rl -= 1;
         }
     }
 }
 
 static void vnc_connection_zrle_update_tile_prle(VncConnection *conn,
+                                                 VncFramebuffer *fb,
+                                                 VncPixelFormat *fmt,
                                                  guint8 palette_size,
                                                  guint16 x, guint16 y,
                                                  guint16 width, guint16 height)
 {
-    VncConnectionPrivate *priv = conn->priv;
     int i, j, rl = 0;
     guint8 palette[128][4];
     guint8 pi = 0;
 
     for (i = 0; i < palette_size; i++)
-        vnc_connection_read_cpixel(conn, palette[i]);
+        vnc_connection_read_cpixel(conn, fmt, palette[i]);
 
     for (j = 0; j < height; j++) {
         for (i = 0; i < width; i++) {
@@ -2486,45 +2501,49 @@ static void vnc_connection_zrle_update_tile_prle(VncConnection *conn,
                     rl = 1;
             }
 
-            vnc_framebuffer_set_pixel_at(priv->fb, palette[pi], x + i, y + j);
+            vnc_framebuffer_set_pixel_at(fb, palette[pi], x + i, y + j);
             rl -= 1;
         }
     }
 }
 
-static void vnc_connection_zrle_update_tile(VncConnection *conn, guint16 x, guint16 y,
+static void vnc_connection_zrle_update_tile(VncConnection *conn,
+                                            VncFramebuffer *fb,
+                                            VncPixelFormat *fmt,
+                                            guint16 x, guint16 y,
                                             guint16 width, guint16 height)
 {
-    VncConnectionPrivate *priv = conn->priv;
     guint8 subencoding = vnc_connection_read_u8(conn);
     guint8 pixel[4];
 
     if (subencoding == 0 ) {
         /* Raw pixel data */
-        vnc_connection_zrle_update_tile_blit(conn, x, y, width, height);
+        vnc_connection_zrle_update_tile_blit(conn, fb, fmt, x, y, width, height);
     } else if (subencoding == 1) {
         /* Solid tile of a single color */
-        vnc_connection_read_cpixel(conn, pixel);
-        vnc_framebuffer_fill(priv->fb, pixel, x, y, width, height);
+        vnc_connection_read_cpixel(conn, fmt, pixel);
+        vnc_framebuffer_fill(fb, pixel, x, y, width, height);
     } else if ((subencoding >= 2) && (subencoding <= 16)) {
         /* Packed palette types */
-        vnc_connection_zrle_update_tile_palette(conn, subencoding,
+        vnc_connection_zrle_update_tile_palette(conn, fb, fmt, subencoding,
                                                 x, y, width, height);
     } else if ((subencoding >= 17) && (subencoding <= 127)) {
         /* FIXME raise error? */
     } else if (subencoding == 128) {
         /* Plain RLE */
-        vnc_connection_zrle_update_tile_rle(conn, x, y, width, height);
+        vnc_connection_zrle_update_tile_rle(conn, fb, fmt, x, y, width, height);
     } else if (subencoding == 129) {
 
     } else if (subencoding >= 130) {
         /* Palette RLE */
-        vnc_connection_zrle_update_tile_prle(conn, subencoding - 128,
+        vnc_connection_zrle_update_tile_prle(conn, fb, fmt, subencoding - 128,
                                              x, y, width, height);
     }
 }
 
 static void vnc_connection_zrle_update(VncConnection *conn,
+                                       VncFramebuffer *fb,
+                                       VncPixelFormat *fmt,
                                        guint16 x, guint16 y,
                                        guint16 width, guint16 height)
 {
@@ -2550,7 +2569,7 @@ static void vnc_connection_zrle_update(VncConnection *conn,
 
             w = MIN(width - i, 64);
             h = MIN(height - j, 64);
-            vnc_connection_zrle_update_tile(conn, x + i, y + j, w, h);
+            vnc_connection_zrle_update_tile(conn, fb, fmt, x + i, y + j, w, h);
         }
     }
 
@@ -2584,27 +2603,25 @@ static guint32 vnc_connection_read_cint(VncConnection *conn)
     return value;
 }
 
-static int vnc_connection_tpixel_size(VncConnection *conn)
+static int vnc_connection_tpixel_size(VncPixelFormat *fmt)
 {
-    VncConnectionPrivate *priv = conn->priv;
-
-    if (priv->fmt.depth == 24)
+    if (fmt->depth == 24)
         return 3;
-    return priv->fmt.bits_per_pixel / 8;
+    return fmt->bits_per_pixel / 8;
 }
 
-static void vnc_connection_read_tpixel(VncConnection *conn, guint8 *pixel)
+static void vnc_connection_read_tpixel(VncConnection *conn,
+                                       VncPixelFormat *fmt,
+                                       guint8 *pixel)
 {
-    VncConnectionPrivate *priv = conn->priv;
-
-    if (priv->fmt.depth == 24) {
+    if (fmt->depth == 24) {
         guint32 val;
         vnc_connection_read(conn, pixel, 3);
-        val = (pixel[0] << priv->fmt.red_shift)
-            | (pixel[1] << priv->fmt.green_shift)
-            | (pixel[2] << priv->fmt.blue_shift);
+        val = (pixel[0] << fmt->red_shift)
+            | (pixel[1] << fmt->green_shift)
+            | (pixel[2] << fmt->blue_shift);
 
-        if (priv->fmt.byte_order != G_BYTE_ORDER)
+        if (fmt->byte_order != G_BYTE_ORDER)
             val =   (((val >>  0) & 0xFF) << 24) |
                 (((val >>  8) & 0xFF) << 16) |
                 (((val >> 16) & 0xFF) << 8) |
@@ -2612,21 +2629,22 @@ static void vnc_connection_read_tpixel(VncConnection *conn, guint8 *pixel)
 
         memcpy(pixel, &val, 4);
     } else
-        vnc_connection_read_pixel(conn, pixel);
+        vnc_connection_read_pixel(conn, fmt, pixel);
 }
 
 static void vnc_connection_tight_update_copy(VncConnection *conn,
+                                             VncFramebuffer *fb,
+                                             VncPixelFormat *fmt,
                                              guint16 x, guint16 y,
                                              guint16 width, guint16 height)
 {
-    VncConnectionPrivate *priv = conn->priv;
     guint8 pixel[4];
     int i, j;
 
     for (j = 0; j < height; j++) {
         for (i = 0; i < width; i++) {
-            vnc_connection_read_tpixel(conn, pixel);
-            vnc_framebuffer_set_pixel_at(priv->fb, pixel, x + i, y + j);
+            vnc_connection_read_tpixel(conn, fmt, pixel);
+            vnc_framebuffer_set_pixel_at(fb, pixel, x + i, y + j);
         }
     }
 }
@@ -2644,11 +2662,11 @@ static int vnc_connection_tight_get_pi(VncConnection *conn, guint8 *ra,
 }
 
 static void vnc_connection_tight_update_palette(VncConnection *conn,
+                                                VncFramebuffer *fb,
                                                 int palette_size, guint8 *palette,
                                                 guint16 x, guint16 y,
                                                 guint16 width, guint16 height)
 {
-    VncConnectionPrivate *priv = conn->priv;
     int i, j;
 
     for (j = 0; j < height; j++) {
@@ -2658,7 +2676,7 @@ static void vnc_connection_tight_update_palette(VncConnection *conn,
             guint8 ind;
 
             ind = vnc_connection_tight_get_pi(conn, &ra, i, palette_size);
-            vnc_framebuffer_set_pixel_at(priv->fb, &palette[ind * 4], x + i, y + j);
+            vnc_framebuffer_set_pixel_at(fb, &palette[ind * 4], x + i, y + j);
         }
     }
 }
@@ -2681,6 +2699,8 @@ static void vnc_connection_tight_sum_pixel(VncConnection *conn,
 }
 
 static void vnc_connection_tight_update_gradient(VncConnection *conn,
+                                                 VncFramebuffer *fb,
+                                                 VncPixelFormat *fmt,
                                                  guint16 x, guint16 y,
                                                  guint16 width, guint16 height)
 {
@@ -2688,9 +2708,8 @@ static void vnc_connection_tight_update_gradient(VncConnection *conn,
     guint8 zero_pixel[4];
     guint8 *last_row, *row;
     int bpp;
-    VncConnectionPrivate *priv = conn->priv;
 
-    bpp = vnc_connection_pixel_size(conn);
+    bpp = vnc_connection_pixel_size(fmt);
     last_row = g_malloc(width * bpp);
     row = g_malloc(width * bpp);
 
@@ -2714,7 +2733,7 @@ static void vnc_connection_tight_update_gradient(VncConnection *conn,
                                                    llp);
 
             /* read the difference pixel from the wire */
-            vnc_connection_read_tpixel(conn, row + i * bpp);
+            vnc_connection_read_tpixel(conn, fmt, row + i * bpp);
 
             /* sum the predicted pixel and the difference to get
              * the original pixel value */
@@ -2726,7 +2745,7 @@ static void vnc_connection_tight_update_gradient(VncConnection *conn,
         }
 
         /* write out row of pixel data */
-        vnc_framebuffer_blt(priv->fb, row, width * bpp, x, y + j, width, 1);
+        vnc_framebuffer_blt(fb, row, width * bpp, x, y + j, width, 1);
 
         /* swap last row and current row */
         tmp_row = last_row;
@@ -2739,11 +2758,12 @@ static void vnc_connection_tight_update_gradient(VncConnection *conn,
 }
 
 
-static void vnc_connection_tight_update_jpeg(VncConnection *conn, guint16 x, guint16 y,
+static void vnc_connection_tight_update_jpeg(VncConnection *conn,
+                                             VncFramebuffer *fb,
+                                             guint16 x, guint16 y,
                                              guint16 width, guint16 height,
                                              guint8 *data, size_t length)
 {
-    VncConnectionPrivate *priv = conn->priv;
     GdkPixbufLoader *loader = gdk_pixbuf_loader_new();
     GdkPixbuf *p;
 
@@ -2757,7 +2777,7 @@ static void vnc_connection_tight_update_jpeg(VncConnection *conn, guint16 x, gui
     p = g_object_ref(gdk_pixbuf_loader_get_pixbuf(loader));
     g_object_unref(loader);
 
-    vnc_framebuffer_rgb24_blt(priv->fb,
+    vnc_framebuffer_rgb24_blt(fb,
                               gdk_pixbuf_get_pixels(p),
                               gdk_pixbuf_get_rowstride(p),
                               x, y, width, height);
@@ -2766,6 +2786,8 @@ static void vnc_connection_tight_update_jpeg(VncConnection *conn, guint16 x, gui
 }
 
 static void vnc_connection_tight_update(VncConnection *conn,
+                                        VncFramebuffer *fb,
+                                        VncPixelFormat *fmt,
                                         guint16 x, guint16 y,
                                         guint16 width, guint16 height)
 {
@@ -2803,7 +2825,7 @@ static void vnc_connection_tight_update(VncConnection *conn,
             palette_size = vnc_connection_read_u8(conn);
             palette_size += 1;
             for (i = 0; i < palette_size; i++)
-                vnc_connection_read_tpixel(conn, palette[i]);
+                vnc_connection_read_tpixel(conn, fmt, palette[i]);
         }
 
         if (filter_id == 1) {
@@ -2812,7 +2834,7 @@ static void vnc_connection_tight_update(VncConnection *conn,
             else
                 data_size = width * height;
         } else
-            data_size = width * height * vnc_connection_tpixel_size(conn);
+            data_size = width * height * vnc_connection_tpixel_size(fmt);
 
         if (data_size >= 12) {
             zlib_length = vnc_connection_read_cint(conn);
@@ -2828,15 +2850,15 @@ static void vnc_connection_tight_update(VncConnection *conn,
 
         switch (filter_id) {
         case 0: /* copy */
-            vnc_connection_tight_update_copy(conn, x, y, width, height);
+            vnc_connection_tight_update_copy(conn, fb, fmt, x, y, width, height);
             break;
         case 1: /* palette */
-            vnc_connection_tight_update_palette(conn, palette_size,
+            vnc_connection_tight_update_palette(conn, fb, palette_size,
                                                 (guint8 *)palette,
                                                 x, y, width, height);
             break;
         case 2: /* gradient */
-            vnc_connection_tight_update_gradient(conn, x, y, width, height);
+            vnc_connection_tight_update_gradient(conn, fb, fmt, x, y, width, height);
             break;
         default: /* error */
             vnc_connection_set_error(conn, "Unexpected tight filter id %d",
@@ -2857,8 +2879,8 @@ static void vnc_connection_tight_update(VncConnection *conn,
     } else if (ccontrol == 8) {
         /* fill */
         /* FIXME check each width; endianness */
-        vnc_connection_read_tpixel(conn, pixel);
-        vnc_framebuffer_fill(priv->fb, pixel, x, y, width, height);
+        vnc_connection_read_tpixel(conn, fmt, pixel);
+        vnc_framebuffer_fill(fb, pixel, x, y, width, height);
     } else if (ccontrol == 9) {
         /* jpeg */
         guint32 length;
@@ -2867,7 +2889,7 @@ static void vnc_connection_tight_update(VncConnection *conn,
         length = vnc_connection_read_cint(conn);
         jpeg_data = g_malloc(length);
         vnc_connection_read(conn, jpeg_data, length);
-        vnc_connection_tight_update_jpeg(conn, x, y, width, height,
+        vnc_connection_tight_update_jpeg(conn, fb, x, y, width, height,
                                          jpeg_data, length);
         g_free(jpeg_data);
     } else {
@@ -2923,21 +2945,77 @@ static void vnc_connection_server_cut_text(VncConnection *conn,
     g_string_free(text, TRUE);
 }
 
-static void vnc_connection_resize(VncConnection *conn, int width, int height)
+static void vnc_connection_resize(VncConnection *conn)
 {
     VncConnectionPrivate *priv = conn->priv;
     struct signal_data sigdata;
 
-    VNC_DEBUG("Desktop resize w=%d h=%d", width, height);
+    VNC_DEBUG("Desktop resize w=%d h=%d", priv->width, priv->height);
 
     if (vnc_connection_has_error(conn))
         return;
 
+    sigdata.params.size.width = priv->width;
+    sigdata.params.size.height = priv->height;
+    vnc_connection_emit_main_context(conn, VNC_DESKTOP_RESIZE, &sigdata);
+}
+
+static void vnc_connection_extended_resize(VncConnection *conn, int width, int height,
+                                           int trigger, int status)
+{
+    VncConnectionPrivate *priv = conn->priv;
+    struct signal_data sigdata;
+    guint8 nscreens, i;
+    guint8 pad[3];
+
+    VNC_DEBUG("Desktop extended resize w=%d h=%d trigger=%d status=%d", width, height, trigger, status);
+
+    priv->has_resize = TRUE;
+
+    if (vnc_connection_has_error(conn))
+        return;
+
+    nscreens = vnc_connection_read_u8(conn);
+    vnc_connection_read(conn, pad, sizeof(pad));
+    if (vnc_connection_has_error(conn))
+        return;
+
+    VNC_DEBUG("Reading info for %u screens", nscreens);
+
+    for (i = 0; i < nscreens; i++) {
+        guint32 id;
+        guint16 screenx, screeny, screenwidth, screenheight;
+        guint32 flags;
+
+        id = vnc_connection_read_u32(conn);
+        screenx = vnc_connection_read_u16(conn);
+        screeny = vnc_connection_read_u16(conn);
+        screenwidth = vnc_connection_read_u16(conn);
+        screenheight = vnc_connection_read_u16(conn);
+        flags = vnc_connection_read_u32(conn);
+
+        VNC_DEBUG("Screen id=%u xpos=%d ypos=%d width=%d height=%d flags=%x",
+                  id, screenx, screeny, screenwidth, screenheight, flags);
+    }
+
+    if (vnc_connection_has_error(conn))
+        return;
+
+    /* Traditionally clients would send a non-incremental update
+     * in response to a desktop resize. The VNC server must
+     * always send an immediate extended desktop resize framebuffer
+     * update in response to non-incremental update request. This
+     * would trigger an infinite loop, so we must block a request
+     * for a non-incremental update immediately following this
+     * resize
+     */
+    priv->skip_non_incremental = TRUE;
     priv->width = width;
     priv->height = height;
 
     sigdata.params.size.width = width;
     sigdata.params.size.height = height;
+
     vnc_connection_emit_main_context(conn, VNC_DESKTOP_RESIZE, &sigdata);
 }
 
@@ -3004,6 +3082,12 @@ static void vnc_connection_rich_cursor(VncConnection *conn, guint16 x, guint16 y
 
         vnc_connection_read(conn, image, imagelen);
         vnc_connection_read(conn, mask, masklen);
+        if (vnc_connection_has_error(conn)) {
+            g_free(image);
+            g_free(mask);
+            g_free(pixbuf);
+            return;
+        }
 
         vnc_connection_rich_cursor_blt(conn, pixbuf, image, mask,
                                        width * (priv->fmt.bits_per_pixel/8),
@@ -3024,9 +3108,6 @@ static void vnc_connection_rich_cursor(VncConnection *conn, guint16 x, guint16 y
 
         priv->cursor = vnc_cursor_new(pixbuf, x, y, width, height);
     }
-
-    if (vnc_connection_has_error(conn))
-        return;
 
     sigdata.params.cursor = priv->cursor;
 
@@ -3053,6 +3134,8 @@ static void vnc_connection_xcursor(VncConnection *conn, guint16 x, guint16 y, gu
         guint32 fg, bg;
         vnc_connection_read(conn, fgrgb, 3);
         vnc_connection_read(conn, bgrgb, 3);
+        if (vnc_connection_has_error(conn))
+            return;
         fg = (255 << 24) | (fgrgb[0] << 16) | (fgrgb[1] << 8) | fgrgb[2];
         bg = (255 << 24) | (bgrgb[0] << 16) | (bgrgb[1] << 8) | bgrgb[2];
 
@@ -3063,6 +3146,13 @@ static void vnc_connection_xcursor(VncConnection *conn, guint16 x, guint16 y, gu
 
         vnc_connection_read(conn, data, rowlen*height);
         vnc_connection_read(conn, mask, rowlen*height);
+        if (vnc_connection_has_error(conn)) {
+            g_free(data);
+            g_free(mask);
+            g_free(pixbuf);
+            return;
+        }
+
         datap = data;
         maskp = mask;
         pixp = (guint32*)pixbuf;
@@ -3090,8 +3180,144 @@ static void vnc_connection_xcursor(VncConnection *conn, guint16 x, guint16 y, gu
         priv->cursor = vnc_cursor_new(pixbuf, x, y, width, height);
     }
 
-    if (vnc_connection_has_error(conn))
-        return;
+    sigdata.params.cursor = priv->cursor;
+
+    vnc_connection_emit_main_context(conn, VNC_CURSOR_CHANGED, &sigdata);
+}
+
+static void vnc_connection_alpha_cursor(VncConnection *conn, guint16 x, guint16 y, guint16 width, guint16 height)
+{
+    VncConnectionPrivate *priv = conn->priv;
+    struct signal_data sigdata;
+
+    if (priv->cursor)
+        g_clear_object(&priv->cursor);
+
+    if (width && height) {
+        guint32 encoding;
+        VncFramebuffer *fb;
+        guint8 *pixels;
+        VncPixelFormat fmt = {
+            .bits_per_pixel = 32,
+            .depth = 32,
+            .byte_order = G_BYTE_ORDER,
+            .true_color_flag = TRUE,
+            .red_max = 255,
+            .green_max = 255,
+            .blue_max = 255,
+            .red_shift = 16,
+            .green_shift = 8,
+            .blue_shift = 0,
+        };
+
+        pixels = g_new0(guint8, width * height * 4);
+        fb = VNC_FRAMEBUFFER(vnc_base_framebuffer_new(pixels,
+                                                      width,
+                                                      height,
+                                                      width * 4,
+                                                      &fmt,
+                                                      &fmt));
+
+        encoding = vnc_connection_read_u32(conn);
+        if (vnc_connection_has_error(conn)) {
+            g_free(pixels);
+            g_object_unref(fb);
+            return;
+        }
+        VNC_DEBUG("Alpha cursor type=%d", encoding);
+        switch (encoding) {
+        case VNC_CONNECTION_ENCODING_RAW:
+            if (!vnc_connection_validate_boundary(conn, fb,
+                                                  0, 0, width, height))
+                break;
+            vnc_connection_raw_update(conn, fb, &fmt, 0, 0, width, height);
+            break;
+        case VNC_CONNECTION_ENCODING_COPY_RECT:
+            if (!vnc_connection_validate_boundary(conn, fb,
+                                                  0, 0, width, height))
+                break;
+            vnc_connection_copyrect_update(conn, fb, 0, 0, width, height);
+            break;
+        case VNC_CONNECTION_ENCODING_RRE:
+            if (!vnc_connection_validate_boundary(conn, fb,
+                                                  0, 0, width, height))
+                break;
+            vnc_connection_rre_update(conn, fb, &fmt, 0, 0, width, height);
+            break;
+        case VNC_CONNECTION_ENCODING_HEXTILE:
+            if (!vnc_connection_validate_boundary(conn, fb,
+                                                  0, 0, width, height))
+                break;
+            vnc_connection_hextile_update(conn, fb, &fmt, 0, 0, width, height);
+            break;
+        case VNC_CONNECTION_ENCODING_ZRLE:
+            if (!vnc_connection_validate_boundary(conn, fb,
+                                                  0, 0, width, height))
+                break;
+            vnc_connection_zrle_update(conn, fb, &fmt, 0, 0, width, height);
+            break;
+        case VNC_CONNECTION_ENCODING_TIGHT:
+            if (!vnc_connection_validate_boundary(conn, fb,
+                                                  0, 0, width, height))
+                break;
+            vnc_connection_tight_update(conn, fb, &fmt, 0, 0, width, height);
+            break;
+        default:
+            vnc_connection_set_error(conn,
+                                     "Unsupported encoding %u for alpha cursor",
+                                     encoding);
+            break;
+        }
+
+        if (vnc_connection_has_error(conn)) {
+            g_free(pixels);
+            g_object_unref(fb);
+            return;
+        }
+
+        /* Some broken VNC servers send hot-pixel outside
+         * bounds of the cursor. We could disconnect and
+         * report an error, but it is more user friendly
+         * to just clamp the hot pixel coords
+         */
+        if (x >= width)
+            x = width - 1;
+        if (y >= height)
+            y = height - 1;
+
+        priv->cursor = vnc_cursor_new(vnc_framebuffer_get_buffer(fb),
+                                      x, y, width, height);
+        /* pixels is owned by priv->cursor now */
+        g_object_unref(fb);
+    } else {
+        guint32 encoding = vnc_connection_read_u32(conn);
+        if (vnc_connection_has_error(conn)) {
+            return;
+        }
+        switch (encoding) {
+        case VNC_CONNECTION_ENCODING_RAW:
+            break;
+        case VNC_CONNECTION_ENCODING_ZRLE: {
+            guint32 length = vnc_connection_read_u32(conn);
+            if (vnc_connection_has_error(conn)) {
+                return;
+            }
+            if (length != 0) {
+                vnc_connection_set_error(conn,
+                                         "Read non-zero length %u for zero sized ZRLE alpha cursor",
+                                         length);
+                return;
+            }
+            break;
+        }
+        default:
+            vnc_connection_set_error(conn,
+                                     "Unsupported encoding %u for zero size alpha cursor",
+                                     encoding);
+            return;
+            break;
+        }
+    }
 
     sigdata.params.cursor = priv->cursor;
 
@@ -3104,6 +3330,32 @@ static void vnc_connection_ext_key_event(VncConnection *conn)
 
     VNC_DEBUG("Keyboard mode extended");
     priv->has_ext_key_event = TRUE;
+}
+
+static void vnc_connection_desktop_name(VncConnection *conn)
+{
+    VncConnectionPrivate *priv = conn->priv;
+    guint32 n_name;
+    struct signal_data s;
+
+    VNC_DEBUG("Desktop name change");
+    n_name = vnc_connection_read_u32(conn);
+    if (vnc_connection_has_error(conn))
+        return;
+    if (n_name > 4096) {
+        vnc_connection_set_error(conn, "Name length %u too long",
+                                 n_name);
+        return;
+    }
+
+    g_free(priv->name);
+    priv->name = g_new(char, n_name + 1);
+
+    vnc_connection_read(conn, priv->name, n_name);
+    priv->name[n_name] = 0;
+    VNC_DEBUG("Display name '%s'", priv->name);
+    s.params.message = priv->name;
+    vnc_connection_emit_main_context(conn, VNC_DESKTOP_RENAME, &s);
 }
 
 
@@ -3121,43 +3373,54 @@ static gboolean vnc_connection_framebuffer_update(VncConnection *conn, gint32 et
 
     switch (etype) {
     case VNC_CONNECTION_ENCODING_RAW:
-        if (!vnc_connection_validate_boundary(conn, x, y, width, height))
+        if (!vnc_connection_validate_boundary(conn, priv->fb,
+                                              x, y, width, height))
             break;
-        vnc_connection_raw_update(conn, x, y, width, height);
+        vnc_connection_raw_update(conn, priv->fb, &priv->fmt, x, y, width, height);
         vnc_connection_update(conn, x, y, width, height);
         break;
     case VNC_CONNECTION_ENCODING_COPY_RECT:
-        if (!vnc_connection_validate_boundary(conn, x, y, width, height))
+        if (!vnc_connection_validate_boundary(conn, priv->fb,
+                                              x, y, width, height))
             break;
-        vnc_connection_copyrect_update(conn, x, y, width, height);
+        vnc_connection_copyrect_update(conn, priv->fb, x, y, width, height);
         vnc_connection_update(conn, x, y, width, height);
         break;
     case VNC_CONNECTION_ENCODING_RRE:
-        if (!vnc_connection_validate_boundary(conn, x, y, width, height))
+        if (!vnc_connection_validate_boundary(conn, priv->fb,
+                                              x, y, width, height))
             break;
-        vnc_connection_rre_update(conn, x, y, width, height);
+        vnc_connection_rre_update(conn, priv->fb, &priv->fmt, x, y, width, height);
         vnc_connection_update(conn, x, y, width, height);
         break;
     case VNC_CONNECTION_ENCODING_HEXTILE:
-        if (!vnc_connection_validate_boundary(conn, x, y, width, height))
+        if (!vnc_connection_validate_boundary(conn, priv->fb,
+                                              x, y, width, height))
             break;
-        vnc_connection_hextile_update(conn, x, y, width, height);
+        vnc_connection_hextile_update(conn, priv->fb, &priv->fmt, x, y, width, height);
         vnc_connection_update(conn, x, y, width, height);
         break;
     case VNC_CONNECTION_ENCODING_ZRLE:
-        if (!vnc_connection_validate_boundary(conn, x, y, width, height))
+        if (!vnc_connection_validate_boundary(conn, priv->fb,
+                                              x, y, width, height))
             break;
-        vnc_connection_zrle_update(conn, x, y, width, height);
+        vnc_connection_zrle_update(conn, priv->fb, &priv->fmt, x, y, width, height);
         vnc_connection_update(conn, x, y, width, height);
         break;
     case VNC_CONNECTION_ENCODING_TIGHT:
-        if (!vnc_connection_validate_boundary(conn, x, y, width, height))
+        if (!vnc_connection_validate_boundary(conn, priv->fb,
+                                              x, y, width, height))
             break;
-        vnc_connection_tight_update(conn, x, y, width, height);
+        vnc_connection_tight_update(conn, priv->fb, &priv->fmt, x, y, width, height);
         vnc_connection_update(conn, x, y, width, height);
         break;
     case VNC_CONNECTION_ENCODING_DESKTOP_RESIZE:
-        vnc_connection_resize(conn, width, height);
+        priv->width = width;
+        priv->height = height;
+        vnc_connection_resize(conn);
+        break;
+    case VNC_CONNECTION_ENCODING_EXTENDED_DESKTOP_RESIZE:
+        vnc_connection_extended_resize(conn, width, height, x /* trigger */, y /* status */);
         break;
     case VNC_CONNECTION_ENCODING_POINTER_CHANGE:
         vnc_connection_pointer_type_change(conn, x);
@@ -3169,7 +3432,10 @@ static gboolean vnc_connection_framebuffer_update(VncConnection *conn, gint32 et
         break;
     case VNC_CONNECTION_ENCODING_WMVi:
         vnc_connection_read_pixel_format(conn, &priv->fmt);
+        priv->width = width;
+        priv->height = height;
         vnc_connection_pixel_format(conn);
+        vnc_connection_resize(conn);
         break;
     case VNC_CONNECTION_ENCODING_RICH_CURSOR:
         vnc_connection_rich_cursor(conn, x, y, width, height);
@@ -3194,6 +3460,14 @@ static gboolean vnc_connection_framebuffer_update(VncConnection *conn, gint32 et
         if (priv->audio_enable_pending)
             vnc_connection_audio_enable(conn);
         break;
+    case VNC_CONNECTION_ENCODING_DESKTOP_NAME:
+        vnc_connection_desktop_name(conn);
+        vnc_connection_resend_framebuffer_update_request(conn);
+        break;
+    case VNC_CONNECTION_ENCODING_ALPHA_CURSOR:
+        vnc_connection_alpha_cursor(conn, x, y, width, height);
+        vnc_connection_resend_framebuffer_update_request(conn);
+        break;
     default:
         vnc_connection_set_error(conn, "Received an unknown encoding type: %d", etype);
         break;
@@ -3212,7 +3486,7 @@ static gboolean vnc_connection_audio_timer(gpointer opaque)
     if (!priv->audio_sample)
         return FALSE;
 
-    VNC_DEBUG("Audio tick %u\n", priv->audio_sample->length);
+    VNC_DEBUG("Audio tick %u", priv->audio_sample->length);
 
     if (priv->audio)
         vnc_audio_playback_data(priv->audio, priv->audio_sample);
@@ -3268,7 +3542,7 @@ static void vnc_connection_audio_action(VncConnection *conn,
         action,
     };
 
-    VNC_DEBUG("Emit audio action %d\n", action);
+    VNC_DEBUG("Emit audio action %d", action);
 
     g_idle_add(do_vnc_connection_audio_action, &data);
 
@@ -3315,6 +3589,7 @@ static gboolean vnc_connection_server_message(VncConnection *conn)
 
         vnc_connection_read(conn, pad, 1);
         n_rects = vnc_connection_read_u16(conn);
+        VNC_DEBUG("Num rects %d", n_rects);
         for (i = 0; i < n_rects; i++) {
             guint16 x, y, w, h;
             gint32 etype;
@@ -3324,6 +3599,11 @@ static gboolean vnc_connection_server_message(VncConnection *conn)
             w = vnc_connection_read_u16(conn);
             h = vnc_connection_read_u16(conn);
             etype = vnc_connection_read_s32(conn);
+
+            if (etype == VNC_CONNECTION_ENCODING_LAST_RECT) {
+                VNC_DEBUG("Last rect");
+                break;
+            }
 
             if (!vnc_connection_framebuffer_update(conn, etype, x, y, w, h))
                 break;
@@ -3397,6 +3677,35 @@ static gboolean vnc_connection_server_message(VncConnection *conn)
         vnc_connection_server_cut_text(conn, data, n_text);
         g_free(data);
     }        break;
+    case VNC_CONNECTION_SERVER_MESSAGE_XVP: {
+        guint8 pad[1];
+        guint8 version;
+        guint8 code;
+        struct signal_data s;
+        vnc_connection_read(conn, pad, 1);
+        version = vnc_connection_read_u8(conn);
+        code = vnc_connection_read_u8(conn);
+
+        if (version < 1) {
+            vnc_connection_set_error(conn, "Invalid XVP version %d", version);
+            break;
+        }
+
+        switch (code) {
+        case VNC_CONNECTION_XVP_FAIL:
+            VNC_DEBUG("XVP power control action failed");
+            vnc_connection_emit_main_context(conn, VNC_POWER_CONTROL_FAILED, &s);
+            break;
+        case VNC_CONNECTION_XVP_INIT:
+            VNC_DEBUG("XVP power control available");
+            priv->powerControl = TRUE;
+            vnc_connection_emit_main_context(conn, VNC_POWER_CONTROL_INITIALIZED, &s);
+            break;
+        default:
+            vnc_connection_set_error(conn, "Invalid XVP code %d", code);
+            break;
+        }
+    }   break;
     case VNC_CONNECTION_SERVER_MESSAGE_QEMU: {
         guint8  n_type;
 
@@ -3603,14 +3912,52 @@ vnc_munge_des_key(unsigned char *key, unsigned char *newkey)
     }
 }
 
+
+static gboolean vnc_connection_encrypt_challenge(VncConnection *conn,
+                                                 guint8 *challenge,
+                                                 guint8 *key)
+{
+    int error;
+    size_t i;
+    unsigned char iv[8] = {};
+
+    vnc_munge_des_key(key, key);
+
+    for (i = 0; i < 16; i += 8) {
+        gnutls_cipher_hd_t handle;
+        gnutls_datum_t gkey = { (unsigned char *)key, 8 };
+        error = gnutls_cipher_init(&handle,
+                                   GNUTLS_CIPHER_DES_CBC,
+                                   &gkey, NULL);
+        if (error != 0)
+            goto error;
+
+        gnutls_cipher_set_iv(handle, iv, sizeof(iv));
+
+        error = gnutls_cipher_encrypt2(handle,
+                                       challenge + i, 8,
+                                       challenge + i, 8);
+        if (error != 0) {
+            gnutls_cipher_deinit(handle);
+            goto error;
+        }
+        gnutls_cipher_deinit(handle);
+    }
+
+    return TRUE;
+
+ error:
+    vnc_connection_set_error(conn, "Unknown authentication failure: %s",
+                             gnutls_strerror(error));
+    return FALSE;
+}
+
 static gboolean vnc_connection_perform_auth_vnc(VncConnection *conn)
 {
     VncConnectionPrivate *priv = conn->priv;
     guint8 challenge[16];
     guint8 key[8];
     gsize keylen;
-    gcry_cipher_hd_t c;
-    gcry_error_t error;
 
     VNC_DEBUG("Do Challenge");
     priv->want_cred_password = TRUE;
@@ -3630,43 +3977,35 @@ static gboolean vnc_connection_perform_auth_vnc(VncConnection *conn)
         keylen = sizeof(key);
     memcpy(key, priv->cred_password, keylen);
 
-    vnc_munge_des_key(key, key);
-
-    error = gcry_cipher_open(&c, GCRY_CIPHER_DES, GCRY_CIPHER_MODE_ECB, 0);
-    if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_cipher_open error: %s\n", gcry_strerror(error));
-        goto error;
-    }
-
-    error = gcry_cipher_setkey(c, key, 8);
-    if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_cipher_setkey error: %s\n", gcry_strerror(error));
-        gcry_cipher_close(c);
-        goto error;
-    }
-
-    error = gcry_cipher_encrypt(c, challenge, 8, challenge, 8);
-    if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_cipher_encrypt error: %s\n", gcry_strerror(error));
-        gcry_cipher_close(c);
-        goto error;
-    }
-    error = gcry_cipher_encrypt(c, challenge + 8, 8, challenge + 8, 8);
-    if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_cipher_encrypt error: %s\n", gcry_strerror(error));
-        gcry_cipher_close(c);
-        goto error;
-    }
-    gcry_cipher_close(c);
+    if (!vnc_connection_encrypt_challenge(conn, challenge, key))
+        return FALSE;
 
     vnc_connection_write(conn, challenge, 16);
     vnc_connection_flush(conn);
     return vnc_connection_check_auth_result(conn);
+}
 
-error:
-    vnc_connection_set_error(conn, "%s: %s", "Unknown authentication failure: %s",
-                             gcry_strerror(error));
-    return FALSE;
+static gboolean vnc_connection_perform_auth_plain(VncConnection *conn)
+{
+    VncConnectionPrivate *priv = conn->priv;
+
+    VNC_DEBUG("Auth plain, gather username/password");
+    priv->want_cred_password = TRUE;
+    priv->want_cred_username = TRUE;
+    priv->want_cred_x509 = FALSE;
+    if (!vnc_connection_gather_credentials(conn))
+        return FALSE;
+
+    if (!priv->cred_password || !priv->cred_username)
+        return FALSE;
+
+    vnc_connection_write_u32(conn, strlen(priv->cred_username));
+    vnc_connection_write_u32(conn, strlen(priv->cred_password));
+    vnc_connection_write(conn, priv->cred_username, strlen(priv->cred_username));
+    vnc_connection_write(conn, priv->cred_password, strlen(priv->cred_password));
+
+    vnc_connection_flush(conn);
+    return vnc_connection_check_auth_result(conn);
 }
 
 /*
@@ -3674,12 +4013,11 @@ error:
  *   Encrypt bytes[length] in memory using key.
  *   Key has to be 8 bytes, length a multiple of 8 bytes.
  */
-static gboolean
+static gcry_error_t
 vncEncryptBytes2(unsigned char *where, const int length, unsigned char *key)
 {
     gcry_cipher_hd_t c;
     int i, j;
-    gboolean ret = FALSE;
     gcry_error_t error;
     unsigned char newkey[8];
 
@@ -3687,13 +4025,13 @@ vncEncryptBytes2(unsigned char *where, const int length, unsigned char *key)
 
     error = gcry_cipher_open(&c, GCRY_CIPHER_DES, GCRY_CIPHER_MODE_ECB, 0);
     if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_cipher_open error: %s\n", gcry_strerror(error));
-        return FALSE;
+        VNC_DEBUG("gcry_cipher_open error: %s", gcry_strerror(error));
+        return error;
     }
 
     error = gcry_cipher_setkey(c, newkey, 8);
     if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_cipher_setkey error: %s\n", gcry_strerror(error));
+        VNC_DEBUG("gcry_cipher_setkey error: %s", gcry_strerror(error));
         goto cleanup;
     }
 
@@ -3702,7 +4040,7 @@ vncEncryptBytes2(unsigned char *where, const int length, unsigned char *key)
 
     error = gcry_cipher_encrypt(c, where, 8, where, 8);
     if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_cipher_encrypt error: %s\n", gcry_strerror(error));
+        VNC_DEBUG("gcry_cipher_encrypt error: %s", gcry_strerror(error));
         goto cleanup;
     }
 
@@ -3712,16 +4050,14 @@ vncEncryptBytes2(unsigned char *where, const int length, unsigned char *key)
 
         error = gcry_cipher_encrypt(c, where + i, 8, where + i, 8);
         if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-            VNC_DEBUG("gcry_cipher_encrypt error: %s\n", gcry_strerror(error));
+            VNC_DEBUG("gcry_cipher_encrypt error: %s", gcry_strerror(error));
             goto cleanup;
         }
     }
 
-    ret = TRUE;
-
  cleanup:
     gcry_cipher_close(c);
-    return ret;
+    return error;
 }
 
 static gboolean vnc_connection_perform_auth_mslogon(VncConnection *conn)
@@ -3730,6 +4066,7 @@ static gboolean vnc_connection_perform_auth_mslogon(VncConnection *conn)
     struct vnc_dh *dh;
     guchar gen[8], mod[8], resp[8], pub[8], key[8];
     gcry_mpi_t genmpi, modmpi, respmpi, pubmpi, keympi;
+    gcry_error_t error;
     guchar username[256], password[64];
     guint passwordLen, usernameLen;
     gboolean allzeroes = TRUE;
@@ -3787,20 +4124,28 @@ static gboolean vnc_connection_perform_auth_mslogon(VncConnection *conn)
     memcpy(password, priv->cred_password, passwordLen);
     memcpy(username, priv->cred_username, usernameLen);
 
-    if (!vncEncryptBytes2(username, sizeof(username), key))
-        return FALSE;
-    if (!vncEncryptBytes2(password, sizeof(password), key))
-        return FALSE;
+    error = vncEncryptBytes2(username, sizeof(username), key);
+    if (gcry_err_code(error) != GPG_ERR_NO_ERROR)
+        goto cleanup;
+    error = vncEncryptBytes2(password, sizeof(password), key);
+    if (gcry_err_code(error) != GPG_ERR_NO_ERROR)
+        goto cleanup;
 
     vnc_connection_write(conn, username, sizeof(username));
     vnc_connection_write(conn, password, sizeof(password));
     vnc_connection_flush(conn);
 
+cleanup:
     gcry_mpi_release(genmpi);
     gcry_mpi_release(modmpi);
     gcry_mpi_release(respmpi);
     vnc_dh_free (dh);
 
+    if (gcry_err_code(error) != GPG_ERR_NO_ERROR) {
+        vnc_connection_set_error(conn, "Unknown authentication failure: %s",
+                                 gcry_strerror(error));
+        return FALSE;
+    }
     return vnc_connection_check_auth_result(conn);
 }
 
@@ -3830,30 +4175,14 @@ static gboolean vnc_connection_perform_auth_ard(VncConnection *conn)
 
     keylen = 256*len[0] + len[1];
     mod = malloc(keylen);
-    if (mod == NULL) {
-        VNC_DEBUG("malloc failed\n");
-        return FALSE;
-    }
     resp = malloc(keylen);
-    if (resp == NULL) {
-        free(mod);
-        VNC_DEBUG("malloc failed\n");
-        return FALSE;
-    }
     pub = malloc(keylen);
-    if (pub == NULL) {
-        free(resp);
-        free(mod);
-        VNC_DEBUG("malloc failed\n");
-        return FALSE;
-    }
     key = malloc(keylen);
-    if (key == NULL) {
-        free(pub);
-        free(resp);
-        free(mod);
-        VNC_DEBUG("malloc failed\n");
-        return FALSE;
+    if (mod == NULL || resp == NULL
+            || pub == NULL || key == NULL) {
+        VNC_DEBUG("malloc failed");
+        error = GPG_ERR_ENOMEM;
+        goto cleanup_mem;
     }
 
     vnc_connection_read(conn, mod, keylen);
@@ -3873,20 +4202,14 @@ static gboolean vnc_connection_perform_auth_ard(VncConnection *conn)
 
     error=gcry_md_open(&md5, GCRY_MD_MD5, 0);
     if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_md_open error: %s\n", gcry_strerror(error));
-        free(pub);
-        free(resp);
-        free(mod);
-        return FALSE;
+        VNC_DEBUG("gcry_md_open error: %s", gcry_strerror(error));
+        goto cleanup_mpi;
     }
     gcry_md_write(md5, key, keylen);
     error=gcry_md_final(md5);
     if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_md_final error: %s\n", gcry_strerror(error));
-        free(pub);
-        free(resp);
-        free(mod);
-        return FALSE;
+        VNC_DEBUG("gcry_md_final error: %s", gcry_strerror(error));
+        goto cleanup_md5;
     }
     shared = gcry_md_read(md5, GCRY_MD_MD5);
 
@@ -3903,45 +4226,44 @@ static gboolean vnc_connection_perform_auth_ard(VncConnection *conn)
 
     error=gcry_cipher_open(&aes, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_ECB, 0);
     if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_cipher_open error: %s\n", gcry_strerror(error));
-        free(pub);
-        free(resp);
-        free(mod);
-        return FALSE;
+        VNC_DEBUG("gcry_cipher_open error: %s", gcry_strerror(error));
+        goto cleanup_md5;
     }
     error=gcry_cipher_setkey(aes, shared, 16);
     if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_cipher_setkey error: %s\n", gcry_strerror(error));
-        free(pub);
-        free(resp);
-        free(mod);
-        gcry_cipher_close(aes);
-        return FALSE;
+        VNC_DEBUG("gcry_cipher_setkey error: %s", gcry_strerror(error));
+        goto cleanup;
     }
     error=gcry_cipher_encrypt(aes, ciphertext, sizeof(ciphertext), userpass, sizeof(userpass));
     if (gcry_err_code (error) != GPG_ERR_NO_ERROR) {
-        VNC_DEBUG("gcry_cipher_encrypt error: %s\n", gcry_strerror(error));
-        free(pub);
-        free(resp);
-        free(mod);
-        gcry_cipher_close(aes);
-        return FALSE;
+        VNC_DEBUG("gcry_cipher_encrypt error: %s", gcry_strerror(error));
+        goto cleanup;
     }
 
     vnc_connection_write(conn, ciphertext, sizeof(ciphertext));
     vnc_connection_write(conn, pub, keylen);
     vnc_connection_flush(conn);
 
-    free(mod);
-    free(resp);
-    free(pub);
-    free(key);
+cleanup:
     gcry_cipher_close(aes);
+cleanup_md5:
     gcry_md_close(md5);
+cleanup_mpi:
     gcry_mpi_release(genmpi);
     gcry_mpi_release(modmpi);
     gcry_mpi_release(respmpi);
     vnc_dh_free (dh);
+cleanup_mem:
+    free(mod);
+    free(resp);
+    free(pub);
+    free(key);
+
+    if (gcry_err_code(error) != GPG_ERR_NO_ERROR) {
+        vnc_connection_set_error(conn, "Unknown authentication failure: %s",
+                                 gcry_strerror(error));
+        return FALSE;
+    }
 
     return vnc_connection_check_auth_result(conn);
 }
@@ -4092,7 +4414,7 @@ static gboolean vnc_connection_perform_auth_sasl(VncConnection *conn)
     };
     sasl_interact_t *interact = NULL;
     guint32 mechlistlen;
-    char *mechlist;
+    char *mechlist = NULL;
     const char *mechname;
     gboolean ret;
     GSocketAddress *addr;
@@ -4206,11 +4528,8 @@ static gboolean vnc_connection_perform_auth_sasl(VncConnection *conn)
     mechlist = g_malloc(mechlistlen+1);
     vnc_connection_read(conn, mechlist, mechlistlen);
     mechlist[mechlistlen] = '\0';
-    if (vnc_connection_has_error(conn)) {
-        g_free(mechlist);
-        mechlist = NULL;
+    if (vnc_connection_has_error(conn))
         goto error;
-    }
 
  restart:
     /* Start the auth negotiation on the client end first */
@@ -4225,8 +4544,6 @@ static gboolean vnc_connection_perform_auth_sasl(VncConnection *conn)
         vnc_connection_set_error(conn,
                                  "Failed to start SASL negotiation: %d (%s)",
                                  err, sasl_errdetail(saslconn));
-        g_free(mechlist);
-        mechlist = NULL;
         goto error;
     }
 
@@ -4416,12 +4733,14 @@ static gboolean vnc_connection_perform_auth_sasl(VncConnection *conn)
      * is defined to be sent unencrypted, and setting saslconn turns
      * on the SSF layer encryption processing */
     priv->saslconn = saslconn;
+    g_free(mechlist);
     return ret;
 
  error:
     if (saslconn)
         sasl_dispose(&saslconn);
     vnc_connection_auth_failure(conn, "Unknown authentication failure");
+    g_free(mechlist);
     return FALSE;
 }
 #endif /* HAVE_SASL */
@@ -4629,7 +4948,7 @@ static gboolean vnc_connection_perform_auth_tls(VncConnection *conn)
 static gboolean vnc_connection_perform_auth_vencrypt(VncConnection *conn)
 {
     VncConnectionPrivate *priv = conn->priv;
-    int major, minor, status, anonTLS;
+    int major, minor, status, anonTLS, needTLS;
     unsigned int nauth, i;
     unsigned int auth[20];
 
@@ -4676,18 +4995,35 @@ static gboolean vnc_connection_perform_auth_vencrypt(VncConnection *conn)
     if (vnc_connection_has_error(conn))
         return FALSE;
 
-    VNC_DEBUG("Choose auth %u", priv->auth_subtype);
+    VNC_DEBUG("Choose auth subtype %u", priv->auth_subtype);
+
+    switch (priv->auth_subtype) {
+    case VNC_CONNECTION_AUTH_VENCRYPT_PLAIN:
+        needTLS = 0;
+        anonTLS = 0;
+        break;
+    case VNC_CONNECTION_AUTH_VENCRYPT_TLSNONE:
+    case VNC_CONNECTION_AUTH_VENCRYPT_TLSPLAIN:
+    case VNC_CONNECTION_AUTH_VENCRYPT_TLSVNC:
+    case VNC_CONNECTION_AUTH_VENCRYPT_TLSSASL:
+        needTLS = 1;
+        anonTLS = 1;
+        break;
+    case VNC_CONNECTION_AUTH_VENCRYPT_X509NONE:
+    case VNC_CONNECTION_AUTH_VENCRYPT_X509PLAIN:
+    case VNC_CONNECTION_AUTH_VENCRYPT_X509VNC:
+    case VNC_CONNECTION_AUTH_VENCRYPT_X509SASL:
+        needTLS = 1;
+        anonTLS = 0;
+        break;
+    default:
+        vnc_connection_set_error(conn,
+                                 "Unknown VeNCrypt auth subtype %d", priv->auth_subtype);
+        return FALSE;
+    }
 
     if (!vnc_connection_gather_credentials(conn))
         return FALSE;
-
-#ifndef DEBUG
-    if (priv->auth_subtype == VNC_CONNECTION_AUTH_VENCRYPT_PLAIN) {
-        vnc_connection_set_error(conn, "%s",
-                                 "Cowardly refusing to transmit plain text password");
-        return FALSE;
-    }
-#endif
 
     vnc_connection_write_u32(conn, priv->auth_subtype);
     vnc_connection_flush(conn);
@@ -4698,21 +5034,14 @@ static gboolean vnc_connection_perform_auth_vencrypt(VncConnection *conn)
         return FALSE;
     }
 
-    switch (priv->auth_subtype) {
-    case VNC_CONNECTION_AUTH_VENCRYPT_TLSNONE:
-    case VNC_CONNECTION_AUTH_VENCRYPT_TLSPLAIN:
-    case VNC_CONNECTION_AUTH_VENCRYPT_TLSVNC:
-    case VNC_CONNECTION_AUTH_VENCRYPT_TLSSASL:
-        anonTLS = 1;
-        break;
-    default:
-        anonTLS = 0;
+    if (needTLS) {
+        if (!vnc_connection_start_tls(conn, anonTLS)) {
+            return FALSE;
+        }
+        VNC_DEBUG("Completed TLS setup, do subauth %u", priv->auth_subtype);
+    } else {
+        VNC_DEBUG("TLS not required for subauth %u", priv->auth_subtype);
     }
-
-    if (!vnc_connection_start_tls(conn, anonTLS)) {
-        return FALSE;
-    }
-    VNC_DEBUG("Completed TLS setup, do subauth %u", priv->auth_subtype);
 
     switch (priv->auth_subtype) {
         /* Plain certificate based auth */
@@ -4735,8 +5064,13 @@ static gboolean vnc_connection_perform_auth_vencrypt(VncConnection *conn)
         return vnc_connection_perform_auth_sasl(conn);
 #endif
 
+    case VNC_CONNECTION_AUTH_VENCRYPT_PLAIN:
+    case VNC_CONNECTION_AUTH_VENCRYPT_TLSPLAIN:
+    case VNC_CONNECTION_AUTH_VENCRYPT_X509PLAIN:
+        return vnc_connection_perform_auth_plain(conn);
+
     default:
-        vnc_connection_set_error(conn, "Unknown auth subtype %u", priv->auth_subtype);
+        vnc_connection_set_error(conn, "Unsupported VeNCrypt auth subtype %u", priv->auth_subtype);
         return FALSE;
     }
 }
@@ -4897,6 +5231,13 @@ static void vnc_connection_class_init(VncConnectionClass *klass)
                                                         G_PARAM_STATIC_NICK |
                                                         G_PARAM_STATIC_BLURB));
 
+    /**
+     * VncConnection::vnc-cursor-changed:
+     * @connection: the connection on which the signal is emitted
+     * @cursor: (nullable): the new cursor
+     *
+     * Emitted when the cursor is changed.
+     */
     signals[VNC_CURSOR_CHANGED] =
         g_signal_new ("vnc-cursor-changed",
                       G_OBJECT_CLASS_TYPE (object_class),
@@ -4966,16 +5307,27 @@ static void vnc_connection_class_init(VncConnectionClass *klass)
                       G_TYPE_INT,
                       G_TYPE_INT);
 
+    signals[VNC_DESKTOP_RENAME] =
+        g_signal_new ("vnc-desktop-rename",
+                      G_OBJECT_CLASS_TYPE (object_class),
+                      G_SIGNAL_RUN_FIRST,
+                      G_STRUCT_OFFSET (VncConnectionClass, vnc_desktop_rename),
+                      NULL, NULL,
+                      g_cclosure_marshal_VOID__STRING,
+                      G_TYPE_NONE,
+                      1,
+                      G_TYPE_STRING);
+
     signals[VNC_PIXEL_FORMAT_CHANGED] =
         g_signal_new ("vnc-pixel-format-changed",
                       G_OBJECT_CLASS_TYPE (object_class),
                       G_SIGNAL_RUN_FIRST,
                       G_STRUCT_OFFSET (VncConnectionClass, vnc_pixel_format_changed),
                       NULL, NULL,
-                      g_cclosure_marshal_VOID__POINTER,
+                      g_cclosure_marshal_VOID__BOXED,
                       G_TYPE_NONE,
                       1,
-                      G_TYPE_POINTER);
+                      VNC_TYPE_PIXEL_FORMAT);
 
     signals[VNC_LED_STATE] =
         g_signal_new ("vnc-led-state",
@@ -4984,6 +5336,26 @@ static void vnc_connection_class_init(VncConnectionClass *klass)
                       G_STRUCT_OFFSET (VncConnectionClass, vnc_led_state),
                       NULL, NULL,
                       g_cclosure_marshal_VOID__INT,
+                      G_TYPE_NONE,
+                      0);
+
+    signals[VNC_POWER_CONTROL_INITIALIZED] =
+        g_signal_new ("vnc-power-control-initialized",
+                      G_OBJECT_CLASS_TYPE (object_class),
+                      G_SIGNAL_RUN_FIRST,
+                      G_STRUCT_OFFSET (VncConnectionClass, vnc_power_control_initialized),
+                      NULL, NULL,
+                      g_cclosure_marshal_VOID__VOID,
+                      G_TYPE_NONE,
+                      0);
+
+    signals[VNC_POWER_CONTROL_FAILED] =
+        g_signal_new ("vnc-power-control-failed",
+                      G_OBJECT_CLASS_TYPE (object_class),
+                      G_SIGNAL_RUN_FIRST,
+                      G_STRUCT_OFFSET (VncConnectionClass, vnc_power_control_failed),
+                      NULL, NULL,
+                      g_cclosure_marshal_VOID__VOID,
                       G_TYPE_NONE,
                       0);
 
@@ -5019,7 +5391,7 @@ static void vnc_connection_class_init(VncConnectionClass *klass)
                       g_cclosure_marshal_VOID__BOXED,
                       G_TYPE_NONE,
                       1,
-                      G_TYPE_VALUE_ARRAY);
+                      g_value_array_get_type());
 
     signals[VNC_AUTH_CHOOSE_TYPE] =
         g_signal_new ("vnc-auth-choose-type",
@@ -5030,7 +5402,7 @@ static void vnc_connection_class_init(VncConnectionClass *klass)
                       g_cclosure_marshal_VOID__BOXED,
                       G_TYPE_NONE,
                       1,
-                      G_TYPE_VALUE_ARRAY);
+                      g_value_array_get_type());
 
     signals[VNC_AUTH_CHOOSE_SUBTYPE] =
         g_signal_new ("vnc-auth-choose-subtype",
@@ -5042,8 +5414,7 @@ static void vnc_connection_class_init(VncConnectionClass *klass)
                       G_TYPE_NONE,
                       2,
                       G_TYPE_UINT,
-                      G_TYPE_VALUE_ARRAY);
-
+                      g_value_array_get_type());
 
     signals[VNC_CONNECTED] =
         g_signal_new ("vnc-connected",
@@ -5082,21 +5453,16 @@ static void vnc_connection_class_init(VncConnectionClass *klass)
                       G_TYPE_NONE,
                       1,
                       G_TYPE_STRING);
-
-
-    g_type_class_add_private(klass, sizeof(VncConnectionPrivate));
 }
 
 
 static void vnc_connection_init(VncConnection *conn)
 {
-    VncConnectionPrivate *priv;
+    VncConnectionPrivate *priv = vnc_connection_get_instance_private(conn);
 
     VNC_DEBUG("Init VncConnection=%p", conn);
 
-    priv = conn->priv = VNC_CONNECTION_GET_PRIVATE(conn);
-
-    memset(priv, 0, sizeof(*priv));
+    conn->priv = priv;
 
     priv->fd = -1;
     priv->auth_type = VNC_CONNECTION_AUTH_INVALID;
@@ -6163,10 +6529,89 @@ int vnc_connection_get_ledstate(VncConnection *conn)
     return priv->ledstate;
 }
 
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
+/**
+ * vnc_connection_get_power_control:
+ * @conn: (transfer none): the connection object
+ *
+ * Determine if the remote server supports power control.
+ * This will only be valid once the "vnc-initialized"
+ * signal has been emitted.
+ *
+ * Returns: TRUE if the server supports power control
  */
+gboolean vnc_connection_get_power_control(VncConnection *conn)
+{
+    VncConnectionPrivate *priv = conn->priv;
+
+    return priv->powerControl;
+}
+
+
+/**
+ * vnc_connection_power_control:
+ * @conn: (transfer none): the connection object
+ *
+ * Perform a power control action on the remote server.
+ *
+ * This is only valid if the "vnc-power-control" signal
+ * has been emitted with a VNC_CONNECTION_POWER_STATUS_INIT
+ * code.
+ *
+ * The action should be assumed to be accepted unless
+ * "vnc-power-control" signal is emitted with a
+ * VNC_CONNECTION_POWER_STATUS_FAIL code.
+ *
+ * Returns: TRUE if the action was sent, FALSE if
+ * power control is not supported
+ */
+gboolean vnc_connection_power_control(VncConnection *conn,
+                                      VncConnectionPowerAction action)
+{
+    VncConnectionPrivate *priv = conn->priv;
+
+    if (!priv->powerControl)
+        return FALSE;
+
+    VNC_DEBUG("Sendng power control action %d", action);
+
+    vnc_connection_buffered_write_u8(conn, VNC_CONNECTION_CLIENT_MESSAGE_XVP);
+    vnc_connection_buffered_write_u8(conn, 0); /* pad */
+    vnc_connection_buffered_write_u8(conn, 1); /* version */
+    vnc_connection_buffered_write_u8(conn, action);
+    vnc_connection_buffered_flush(conn);
+
+    return !vnc_connection_has_error(conn);
+}
+
+
+VncConnectionResizeStatus vnc_connection_set_size(VncConnection *conn,
+                                                  guint width, guint height)
+{
+    VncConnectionPrivate *priv = conn->priv;
+
+    VNC_DEBUG("Requesting resize %dx%d", width, height);
+
+    if (!priv->has_resize)
+        return VNC_CONNECTION_RESIZE_STATUS_UNSUPPORTED;
+
+    vnc_connection_buffered_write_u8(conn, VNC_CONNECTION_CLIENT_MESSAGE_SET_DESKTOP_SIZE);
+    vnc_connection_buffered_write_u8(conn, 0); /* pad */
+    vnc_connection_buffered_write_u16(conn, width);
+    vnc_connection_buffered_write_u16(conn, height);
+
+    vnc_connection_buffered_write_u8(conn, 1); /* nscreens */
+    vnc_connection_buffered_write_u8(conn, 0); /* pad */
+
+    /* 1st screen */
+    vnc_connection_buffered_write_u32(conn, 0); /* ID */
+    vnc_connection_buffered_write_u16(conn, 0); /* x-pos */
+    vnc_connection_buffered_write_u16(conn, 0); /* y-pos */
+    vnc_connection_buffered_write_u16(conn, width);
+    vnc_connection_buffered_write_u16(conn, height);
+    vnc_connection_buffered_write_u32(conn, 0); /* flags */
+
+    vnc_connection_buffered_flush(conn);
+
+    return !vnc_connection_has_error(conn);
+
+}

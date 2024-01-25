@@ -113,11 +113,3 @@ const gchar *vnc_util_get_version_string(void)
 {
     return VERSION;
 }
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

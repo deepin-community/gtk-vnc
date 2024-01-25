@@ -52,14 +52,9 @@ VncPixelFormat *vnc_pixel_format_new(void);
 VncPixelFormat *vnc_pixel_format_copy(VncPixelFormat *format);
 void vnc_pixel_format_free(VncPixelFormat *format);
 
+gboolean vnc_pixel_format_match(const VncPixelFormat *format,
+                                const VncPixelFormat *other);
+
 G_END_DECLS
 
 #endif /* VNC_PIXEL_FORMAT_H */
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

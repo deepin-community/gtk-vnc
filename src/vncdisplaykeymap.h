@@ -30,10 +30,3 @@ guint16 vnc_display_keymap_gdk2rfb(const guint16 *keycode_map,
                                    guint16 keycode);
 
 #endif /* VNC_DISPLAY_KEYMAP_H */
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

@@ -133,10 +133,3 @@ void *coroutine_yield(void *arg)
     coroutine_self()->caller = NULL;
     return coroutine_swap(coroutine_self(), to, arg);
 }
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

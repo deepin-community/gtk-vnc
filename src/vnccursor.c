@@ -25,9 +25,6 @@
 
 #include <string.h>
 
-#define VNC_CURSOR_GET_PRIVATE(obj)                                     \
-    (G_TYPE_INSTANCE_GET_PRIVATE((obj), VNC_TYPE_CURSOR, VncCursorPrivate))
-
 struct _VncCursorPrivate
 {
     guint8 *data;
@@ -37,7 +34,7 @@ struct _VncCursorPrivate
     guint16 height;
 };
 
-G_DEFINE_TYPE(VncCursor, vnc_cursor, G_TYPE_OBJECT)
+G_DEFINE_TYPE_WITH_PRIVATE(VncCursor, vnc_cursor, G_TYPE_OBJECT)
 
 /* Properties */
 enum
@@ -225,16 +222,13 @@ static void vnc_cursor_class_init(VncCursorClass *klass)
                                                      G_PARAM_STATIC_NAME |
                                                      G_PARAM_STATIC_NICK |
                                                      G_PARAM_STATIC_BLURB));
-
-    g_type_class_add_private(klass, sizeof(VncCursorPrivate));
 }
 
 static void vnc_cursor_init(VncCursor *cursor)
 {
-    VncCursorPrivate *priv;
+    VncCursorPrivate *priv = vnc_cursor_get_instance_private(cursor);
 
-    priv = cursor->priv = VNC_CURSOR_GET_PRIVATE(cursor);
-    memset(priv, 0, sizeof(VncCursorPrivate));
+    cursor->priv = priv;
 }
 
 
@@ -316,12 +310,3 @@ guint16 vnc_cursor_get_height(VncCursor *cursor)
 
     return priv->height;
 }
-
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

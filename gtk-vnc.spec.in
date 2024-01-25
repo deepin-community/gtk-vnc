@@ -1,35 +1,24 @@
 # -*- rpm-spec -*-
 
-# This spec file assumes you are building for Fedora 26 or newer,
-# or for RHEL 7 or newer. It may need some tweaks for other distros.
+# This spec file assumes you are building for Fedora 32 or newer,
+# or for RHEL 8 or newer. It may need some tweaks for other distros.
 
-%if 0%{?fedora} || 0%{?rhel} >= 8
-    %global tls_priority "@LIBVIRT,SYSTEM"
-%else
-    %global tls_priority "NORMAL"
-%endif
+%global tls_priority "@LIBVIRT,SYSTEM"
+%global verdir %(echo ${version} | cut -d. -f1,2)
 
 Summary: A GTK widget for VNC clients
 Name: gtk-vnc
 Version: @VERSION@
 Release: 1%{?dist}
 License: LGPLv2+
-Source: http://ftp.gnome.org/pub/GNOME/sources/%{name}/0.5/%{name}-%{version}.tar.xz
-URL: https://wiki.gnome.org/Projects/gtk-vnc
+Source: https://download.gnome.org/sources/%{name}/%{verdir}/%{name}-%{version}.tar.xz
+URL: https://gitlab.gnome.org/GNOME/gtk-vnc
 Requires: gvnc = %{version}-%{release}
-%if 0%{?fedora}
-BuildRequires: python3
-%else
-%if 0%{?rhel} > 7
 BuildRequires: python3-devel
-%else
-BuildRequires: python
-%endif
-%endif
 BuildRequires: gnutls-devel libgcrypt-devel cyrus-sasl-devel zlib-devel
 BuildRequires: gobject-introspection-devel
 BuildRequires: gtk3-devel
-BuildRequires: vala-tools
+BuildRequires: vala
 BuildRequires: pulseaudio-libs-devel
 BuildRequires: /usr/bin/pod2man
 BuildRequires: meson
@@ -91,7 +80,7 @@ screenshots of a VNC desktop
 %package -n gtk-vnc2
 Summary: A GTK3 widget for VNC clients
 Requires: gvnc = %{version}-%{release}
-Obsoletes: gtk-vnc
+Obsoletes: gtk-vnc < 1.0.0
 
 %description -n gtk-vnc2
 gtk-vnc is a VNC viewer widget for GTK3. It is built using coroutines
@@ -102,7 +91,7 @@ Summary: Development files to build GTK3 applications with gtk-vnc
 Requires: gtk-vnc2 = %{version}-%{release}
 Requires: pkgconfig
 Requires: gtk3-devel
-Obsoletes: gtk-vnc-devel
+Obsoletes: gtk-vnc-devel < 1.0.0
 
 %description -n gtk-vnc2-devel
 gtk-vnc is a VNC viewer widget for GTK3. It is built using coroutines
@@ -123,25 +112,8 @@ chmod -x examples/*.pl examples/*.js examples/*.py
 
 %find_lang %{name}
 
-%post -p /sbin/ldconfig
-
-%postun -p /sbin/ldconfig
-
-%post -n gvnc -p /sbin/ldconfig
-
-%postun -n gvnc -p /sbin/ldconfig
-
-%post -n gvncpulse -p /sbin/ldconfig
-
-%postun -n gvncpulse -p /sbin/ldconfig
-
-%post -n gtk-vnc2 -p /sbin/ldconfig
-
-%postun -n gtk-vnc2 -p /sbin/ldconfig
-
 %check
 %meson_test
-
 
 %files -n gvnc -f %{name}.lang
 %{_libdir}/libgvnc-1.0.so.*

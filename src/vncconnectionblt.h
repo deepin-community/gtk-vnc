@@ -156,12 +156,3 @@ static void TIGHT_SUM_PIXEL(VncConnection *conn,
 #undef dst_pixel_t
 #undef src_pixel_t
 #undef ssrc_pixel_t
-
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

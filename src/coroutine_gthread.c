@@ -37,12 +37,6 @@ static struct coroutine leader;
 
 static void coroutine_system_init(void)
 {
-    if (!g_thread_supported()) {
-        CO_DEBUG("INIT");
-        g_thread_init(NULL);
-    }
-
-
     run_cond = g_cond_new();
     run_lock = g_mutex_new();
     CO_DEBUG("LOCK");
@@ -160,10 +154,3 @@ void *coroutine_yield(void *arg)
     coroutine_self()->caller = NULL;
     return coroutine_swap(coroutine_self(), to, arg);
 }
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

@@ -1,7 +1,12 @@
 #! /usr/bin/make -f
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_LDFLAGS_MAINT_APPEND = -Wl,-O1 -Wl,-z,defs
+export DPKG_GENSYMBOLS_CHECK_LEVEL = 4
 
 %:
 	dh $@ --builddirectory=_build
 
+# We probably need to add a -common package for translations
+override_dh_missing:
+	dh_missing -Xusr/share/locale

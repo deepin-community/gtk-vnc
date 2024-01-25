@@ -52,11 +52,3 @@ guint vnc_grab_sequence_get_nth(VncGrabSequence *sequence,
 G_END_DECLS
 
 #endif /* VNC_GRAB_SEQUENCE_H */
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

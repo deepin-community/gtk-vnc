@@ -21,6 +21,7 @@
 #ifndef GVNC_H
 #define GVNC_H
 
+#include <vncversion.h>
 #include <vncbaseframebuffer.h>
 #include <vncconnectionenums.h>
 #include <vnccursor.h>
@@ -31,10 +32,3 @@
 #include <vncutil.h>
 
 #endif
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

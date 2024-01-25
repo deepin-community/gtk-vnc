@@ -60,11 +60,3 @@ VncAudioPulse *vnc_audio_pulse_new(void);
 G_END_DECLS
 
 #endif /* VNC_AUDIO_PULSE_H */
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

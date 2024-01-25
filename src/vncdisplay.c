@@ -39,6 +39,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <math.h>
 
 #ifdef G_OS_WIN32
 #include <windows.h>
@@ -47,9 +48,6 @@
 #define MAPVK_VK_TO_VSC 0
 #endif
 #endif
-
-#define VNC_DISPLAY_GET_PRIVATE(obj)                                    \
-    (G_TYPE_INSTANCE_GET_PRIVATE((obj), VNC_TYPE_DISPLAY, VncDisplayPrivate))
 
 struct _VncDisplayPrivate
 {
@@ -72,6 +70,10 @@ struct _VncDisplayPrivate
     int last_x;
     int last_y;
 
+    int last_resize_reqw;
+    int last_resize_reqh;
+    gulong pending_resize_id;
+
     gboolean absolute;
 
     gboolean grab_pointer;
@@ -82,7 +84,11 @@ struct _VncDisplayPrivate
     gboolean allow_scaling;
     gboolean shared_flag;
     gboolean force_size;
+    gboolean allow_resize;
     gboolean smoothing;
+    gboolean keep_aspect_ratio;
+    guint rotation;
+    guint zoom_level;
 
     GSList *preferable_auths;
     GSList *preferable_vencrypt_subauths;
@@ -98,7 +104,7 @@ struct _VncDisplayPrivate
 #endif
 };
 
-G_DEFINE_TYPE(VncDisplay, vnc_display, GTK_TYPE_DRAWING_AREA)
+G_DEFINE_TYPE_WITH_PRIVATE(VncDisplay, vnc_display, GTK_TYPE_DRAWING_AREA)
 
 /* Properties */
 enum
@@ -115,8 +121,12 @@ enum
     PROP_SCALING,
     PROP_SHARED_FLAG,
     PROP_FORCE_SIZE,
+    PROP_ALLOW_RESIZE,
     PROP_SMOOTHING,
+    PROP_KEEP_ASPECT_RATIO,
+    PROP_ROTATE,
     PROP_DEPTH,
+    PROP_ZOOM_LEVEL,
     PROP_GRAB_KEYS,
     PROP_CONNECTION,
 };
@@ -135,6 +145,7 @@ typedef enum
         VNC_AUTH_CREDENTIAL,
 
         VNC_DESKTOP_RESIZE,
+        VNC_DESKTOP_RENAME,
 
         VNC_AUTH_FAILURE,
         VNC_AUTH_UNSUPPORTED,
@@ -142,6 +153,8 @@ typedef enum
         VNC_SERVER_CUT_TEXT,
         VNC_BELL,
         VNC_ERROR,
+        VNC_POWER_CONTROL_INITIALIZED,
+        VNC_POWER_CONTROL_FAILED,
 
         LAST_SIGNAL
     } vnc_display_signals;
@@ -212,11 +225,23 @@ vnc_display_get_property (GObject    *object,
         case PROP_FORCE_SIZE:
             g_value_set_boolean (value, vnc->priv->force_size);
             break;
+        case PROP_ALLOW_RESIZE:
+            g_value_set_boolean (value, vnc->priv->allow_resize);
+            break;
         case PROP_SMOOTHING:
             g_value_set_boolean (value, vnc->priv->smoothing);
             break;
+        case PROP_KEEP_ASPECT_RATIO:
+            g_value_set_boolean (value, vnc->priv->keep_aspect_ratio);
+            break;
+        case PROP_ROTATE:
+            g_value_set_uint (value, vnc->priv->rotation);
+            break;
         case PROP_DEPTH:
             g_value_set_enum (value, vnc->priv->depth);
+            break;
+        case PROP_ZOOM_LEVEL:
+            g_value_set_uint (value, vnc->priv->zoom_level);
             break;
         case PROP_GRAB_KEYS:
             g_value_set_boxed(value, vnc->priv->vncgrabseq);
@@ -264,11 +289,23 @@ vnc_display_set_property (GObject      *object,
         case PROP_FORCE_SIZE:
             vnc_display_set_force_size (vnc, g_value_get_boolean (value));
             break;
+        case PROP_ALLOW_RESIZE:
+            vnc_display_set_allow_resize (vnc, g_value_get_boolean (value));
+            break;
         case PROP_SMOOTHING:
             vnc_display_set_smoothing (vnc, g_value_get_boolean (value));
             break;
+        case PROP_KEEP_ASPECT_RATIO:
+            vnc_display_set_keep_aspect_ratio (vnc, g_value_get_boolean (value));
+            break;
+        case PROP_ROTATE:
+            vnc_display_set_rotation (vnc, g_value_get_uint (value));
+            break;
         case PROP_DEPTH:
             vnc_display_set_depth (vnc, g_value_get_enum (value));
+            break;
+        case PROP_ZOOM_LEVEL:
+            vnc_display_set_zoom_level (vnc, g_value_get_uint (value));
             break;
         case PROP_GRAB_KEYS:
             vnc_display_set_grab_keys(vnc, g_value_get_boxed(value));
@@ -366,66 +403,171 @@ static void setup_surface_cache(VncDisplay *dpy, cairo_t *crWin, int w, int h)
     cairo_destroy(crCache);
 }
 
+static void
+get_render_region_info(GtkWidget *widget,
+                       int *offsetx, int *offsety,
+                       int *width, int *height,
+                       double *scalex, double *scaley,
+                       int *fbwidth, int *fbheight,
+                       int *winwidth, int *winheight)
+{
+    VncDisplay *obj = VNC_DISPLAY(widget);
+    VncDisplayPrivate *priv = obj->priv;
+    /*
+     * Width and height of the unscaled, but possibly rotated remote desktop. */
+    int rotwidth, rotheight;
+
+    *winwidth = gdk_window_get_width(gtk_widget_get_window(widget));
+    *winheight = gdk_window_get_height(gtk_widget_get_window(widget));
+
+    if (!priv->fb) {
+        *offsetx = 0;
+        *offsety = 0;
+        *width = 0;
+        *height = 0;
+        *fbwidth = 0;
+        *fbheight = 0;
+        *scalex = 1;
+        *scaley = 1;
+        return;
+    }
+
+    *fbwidth = vnc_framebuffer_get_width(VNC_FRAMEBUFFER(priv->fb));
+    *fbheight = vnc_framebuffer_get_height(VNC_FRAMEBUFFER(priv->fb));
+
+    if (priv->rotation == 0u || priv->rotation == 180u) {
+        rotwidth = *fbwidth;
+        rotheight = *fbheight;
+    } else {
+        rotwidth = *fbheight;
+        rotheight = *fbwidth;
+    }
+
+    if (priv->allow_scaling) {
+        *offsetx = 0;
+        *offsety = 0;
+        *width = *winwidth;
+        *height = *winheight;
+        *scalex = (double)*winwidth / (double)rotwidth;
+        *scaley = (double)*winheight / (double)rotheight;
+
+        if (priv->keep_aspect_ratio) {
+            if (*scalex > *scaley) {
+                *scalex = *scaley;
+                *width = rotwidth * *scalex;
+                *offsetx = (*winwidth - *width) / 2;
+            } else if (*scalex < *scaley) {
+                *scaley = *scalex;
+                *height = rotheight * *scaley;
+                *offsety = (*winheight - *height) / 2;
+            }
+        }
+    } else {
+        if (*winwidth > rotwidth) {
+            *offsetx = (*winwidth - rotwidth) / 2;
+            *width = rotwidth;
+        } else {
+            *offsetx = 0;
+            *width = *winwidth;
+        }
+        if (*winheight > rotheight) {
+            *offsety = (*winheight - rotheight) / 2;
+            *height = rotheight;
+        } else {
+            *offsety = 0;
+            *height = *winheight;
+        }
+        *scalex = round((double)priv->zoom_level / 100.0);
+        *scaley = round((double)priv->zoom_level / 100.0);
+    }
+}
+
 static gboolean draw_event(GtkWidget *widget, cairo_t *cr)
 {
     VncDisplay *obj = VNC_DISPLAY(widget);
     VncDisplayPrivate *priv = obj->priv;
-    int ww, wh;
-    int mx = 0, my = 0;
-    int fbw = 0, fbh = 0;
+    int offsetx, offsety;
+    int width, height;
+    double scalex, scaley;
+    int fbwidth, fbheight;
+    int winwidth, winheight;
+
+    get_render_region_info(widget,
+                           &offsetx, &offsety,
+                           &width, &height,
+                           &scalex, &scaley,
+                           &fbwidth, &fbheight,
+                           &winwidth, &winheight);
+    VNC_DEBUG("win %dx%d fb %dx%d render %dx%d @ %d,%d scale %f,%f",
+              winwidth, winheight,
+              fbwidth, fbheight,
+              width, height,
+              offsetx, offsety,
+              scalex, scaley);
 
     if (priv->fb) {
-        fbw = vnc_framebuffer_get_width(VNC_FRAMEBUFFER(priv->fb));
-        fbh = vnc_framebuffer_get_height(VNC_FRAMEBUFFER(priv->fb));
-
-        setup_surface_cache(obj, cr, fbw, fbh);
+        setup_surface_cache(obj, cr, fbwidth, fbheight);
     }
 
-    ww = gdk_window_get_width(gtk_widget_get_window(widget));
-    wh = gdk_window_get_height(gtk_widget_get_window(widget));
+    /* First fill the widget with the background colour, ... */
+    cairo_rectangle(cr, 0, 0, winwidth, winheight);
 
-    if (ww > fbw)
-        mx = (ww - fbw) / 2;
-    if (wh > fbh)
-        my = (wh - fbh) / 2;
+    /* ...optionally cutting out the inner area where the pixmap
+       will be drawn. This avoids 'flashing' since we're
+       not double-buffering. Note we're using the undocumented
+       behaviour of drawing the rectangle from right to left
+       to cut out the hole */
+    if (priv->fb)
+        cairo_rectangle(cr, offsetx + width, offsety,
+                        -1 * width, height);
+    cairo_fill(cr);
 
-    /* If we don't have a pixmap, or we're not scaling, then
-       we need to fill with background color */
-    if (!priv->fb ||
-        !priv->allow_scaling) {
-        cairo_rectangle(cr, 0, 0, ww, wh);
-        /* Optionally cut out the inner area where the pixmap
-           will be drawn. This avoids 'flashing' since we're
-           not double-buffering. Note we're using the undocumented
-           behaviour of drawing the rectangle from right to left
-           to cut out the whole */
-        if (priv->fb)
-            cairo_rectangle(cr, mx + fbw, my,
-                            -1 * fbw, fbh);
-        cairo_fill(cr);
-    }
-
-    /* Draw the VNC display */
+    /* Now render the remote desktop, scaling/offsetting
+     * as needed */
     if (priv->fb) {
-        if (priv->allow_scaling) {
-            double sx, sy;
-            /* Scale to fill window */
-            sx = (double)ww / (double)fbw;
-            sy = (double)wh / (double)fbh;
-            cairo_scale(cr, sx, sy);
-            cairo_set_source_surface(cr,
-                                     priv->fbCache,
-                                     0,
-                                     0);
-            if (!priv->smoothing) {
-                cairo_pattern_set_filter(cairo_get_source(cr),
-                                         CAIRO_FILTER_NEAREST);
-            }
-        } else {
-            cairo_set_source_surface(cr,
-                                     priv->fbCache,
-                                     mx,
-                                     my);
+        cairo_matrix_t mtx = {0., 0., 0., 0., 0., 0.};
+        double source_surface_offsetx, source_surface_offsety;
+
+        switch (priv->rotation) {
+        case 0u:
+        default:
+            mtx.xx = scalex;
+            mtx.yy = scaley;
+            source_surface_offsetx = offsetx / scalex;
+            source_surface_offsety = offsety / scaley;
+            break;
+        case 90u:
+            mtx.yx = scaley;
+            mtx.xy = -scalex;
+            mtx.x0 = (double)winwidth;
+            source_surface_offsetx = offsety / scaley;
+            source_surface_offsety = offsetx / scalex;
+            break;
+        case 180u:
+            mtx.xx = -scalex;
+            mtx.yy = -scaley;
+            mtx.x0 = (double)winwidth;
+            mtx.y0 = (double)winheight;
+            source_surface_offsetx = offsetx / scalex;
+            source_surface_offsety = offsety / scaley;
+            break;
+        case 270u:
+            mtx.yx = -scaley;
+            mtx.xy = scalex;
+            mtx.y0 = (double)winheight;
+            source_surface_offsetx = offsety / scaley;
+            source_surface_offsety = offsetx / scalex;
+            break;
+        }
+        cairo_transform(cr, &mtx);
+        cairo_set_source_surface(cr,
+                priv->fbCache,
+                source_surface_offsetx,
+                source_surface_offsety);
+
+        if (!priv->smoothing) {
+            cairo_pattern_set_filter(cairo_get_source(cr),
+                                     CAIRO_FILTER_NEAREST);
         }
         cairo_paint(cr);
     }
@@ -719,17 +861,17 @@ static gboolean scroll_event(GtkWidget *widget, GdkEventScroll *scroll)
 static gboolean motion_event(GtkWidget *widget, GdkEventMotion *motion)
 {
     VncDisplayPrivate *priv = VNC_DISPLAY(widget)->priv;
-    int ww, wh;
-    int fbw, fbh;
+    int offsetx, offsety;
+    int width, height;
+    double scalex, scaley;
+    int fbwidth, fbheight;
+    int winwidth, winheight;
 
     if (priv->conn == NULL || !vnc_connection_is_initialized(priv->conn))
         return FALSE;
 
     if (!priv->fb)
         return FALSE;
-
-    fbw = vnc_framebuffer_get_width(VNC_FRAMEBUFFER(priv->fb));
-    fbh = vnc_framebuffer_get_height(VNC_FRAMEBUFFER(priv->fb));
 
     /* In relative mode, only move the server mouse pointer
      * if the client grab is active */
@@ -739,32 +881,40 @@ static gboolean motion_event(GtkWidget *widget, GdkEventMotion *motion)
     if (priv->read_only)
         return FALSE;
 
-    ww = gdk_window_get_width(gtk_widget_get_window(widget));
-    wh = gdk_window_get_height(gtk_widget_get_window(widget));
+    get_render_region_info(widget,
+                           &offsetx, &offsety,
+                           &width, &height,
+                           &scalex, &scaley,
+                           &fbwidth, &fbheight,
+                           &winwidth, &winheight);
 
-    /* First apply adjustments to the coords in the motion event */
-    if (priv->allow_scaling) {
-        double sx, sy;
-        sx = (double)fbw / (double)ww;
-        sy = (double)fbh / (double)wh;
+    /* First apply adjustments to the coords in the motion event
+     * based on the scaling and offsetting requirements */
 
-        /* Scaling the desktop, so scale the mouse coords
-         * by same ratio */
-        motion->x *= sx;
-        motion->y *= sy;
-    } else {
-        int mw = 0, mh = 0;
+    motion->x -= offsetx;
+    motion->y -= offsety;
 
-        if (ww > fbw)
-            mw = (ww - fbw) / 2;
-        if (wh > fbh)
-            mh = (wh - fbh) / 2;
-
-        /* Not scaling, drawing the desktop centered
-         * in the larger window, so offset the mouse
-         * coords to match centering */
-        motion->x -= mw;
-        motion->y -= mh;
+    /* The inverse transform of that applied in draw_event(). */
+    switch (priv->rotation) {
+        int tmp;
+    case 0u:
+    default:
+        motion->x /= scalex;
+        motion->y /= scaley;
+        break;
+    case 90u:
+        tmp = motion->x;
+        motion->x = motion->y / scaley;
+        motion->y = (width - tmp) / scalex;
+        break;
+    case 180u:
+        motion->x = (width - motion->x) / scalex;
+        motion->y = (height - motion->y) / scaley;
+        break;
+    case 270u:
+        tmp = motion->x;
+        motion->x = (height - motion->y) / scaley;
+        motion->y = tmp / scalex;
     }
 
     /* Next adjust the real client pointer */
@@ -805,15 +955,15 @@ static gboolean motion_event(GtkWidget *widget, GdkEventMotion *motion)
              * them to the boundaries. We don't want to actually
              * drop the events though, because even if the X coord
              * is out of bounds we want the server to see Y coord
-             * changes, and vica-verca. */
+             * changes, and vice-versa. */
             if (dx < 0)
                 dx = 0;
             if (dy < 0)
                 dy = 0;
-            if (dx >= fbw)
-                dx = fbw - 1;
-            if (dy >= fbh)
-                dy = fbh - 1;
+            if (dx >= fbwidth)
+                dx = fbwidth - 1;
+            if (dy >= fbheight)
+                dy = fbheight - 1;
         } else {
             /* Just send the delta since last motion event */
             dx = (int)motion->x + 0x7FFF - priv->last_x;
@@ -890,14 +1040,6 @@ static gboolean check_for_grab_key(GtkWidget *widget, int type, int keyval)
 }
 
 
-/* Compatability code to allow build on Gtk2 and Gtk3 */
-#ifndef GDK_Tab
-#define GDK_Tab GDK_KEY_Tab
-#endif
-#ifndef GDK_ISO_Left_Tab
-#define GDK_ISO_Left_Tab GDK_KEY_ISO_Left_Tab
-#endif
-
 static gboolean key_event(GtkWidget *widget, GdkEventKey *key)
 {
     VncDisplayPrivate *priv = VNC_DISPLAY(widget)->priv;
@@ -931,8 +1073,8 @@ static gboolean key_event(GtkWidget *widget, GdkEventKey *key)
      * They need the Tab key and will apply the
      * Shift modifier themselves
      */
-    if (keyval == GDK_ISO_Left_Tab) {
-        keyval = GDK_Tab;
+    if (keyval == GDK_KEY_ISO_Left_Tab) {
+        keyval = GDK_KEY_Tab;
     }
 
     /*
@@ -1110,6 +1252,67 @@ static gboolean focus_out_event(GtkWidget *widget, GdkEventFocus *focus G_GNUC_U
     return TRUE;
 }
 
+static gboolean do_desktop_resize(gpointer opaque)
+{
+    VncDisplay *obj = VNC_DISPLAY(opaque);
+    VncDisplayPrivate *priv = obj->priv;
+    VncConnectionResizeStatus status;
+
+    status = vnc_connection_set_size(priv->conn,
+                                     priv->last_resize_reqw,
+                                     priv->last_resize_reqh);
+    VNC_DEBUG("Made desktop resize req %dx%d status=%d",
+              priv->last_resize_reqw, priv->last_resize_reqh, status);
+
+    priv->pending_resize_id = 0;
+
+    return FALSE;
+}
+
+static gboolean configure_event(GtkWidget *widget,
+                                GdkEventConfigure *cfg)
+{
+    VncDisplayPrivate *priv = VNC_DISPLAY(widget)->priv;
+    int fbw, fbh;
+
+    if (priv->conn == NULL || !vnc_connection_is_initialized(priv->conn))
+        return FALSE;
+
+    if (!priv->allow_resize)
+        return FALSE;
+
+    fbw = vnc_framebuffer_get_width(VNC_FRAMEBUFFER(priv->fb));
+    fbh = vnc_framebuffer_get_height(VNC_FRAMEBUFFER(priv->fb));
+
+    fbw = round(fbw * (double)priv->zoom_level / 100.0);
+    fbh = round(fbh * (double)priv->zoom_level / 100.0);
+
+    if (cfg->width == fbw &&
+        cfg->height == fbh) {
+        VNC_DEBUG("Framebuffer already matches widget size %dx%d", fbw, fbh);
+        return FALSE;
+    }
+
+    if (cfg->width == priv->last_resize_reqw &&
+        cfg->height == priv->last_resize_reqh) {
+        VNC_DEBUG("Already requested resize to %dx%d", fbw, fbh);
+        return FALSE;
+    }
+
+    VNC_DEBUG("Need to try resize to %dx%d", cfg->width, cfg->height);
+    priv->last_resize_reqw = round(cfg->width * 100.0 / (double)priv->zoom_level);
+    priv->last_resize_reqh = round(cfg->height * 100.0 / (double)priv->zoom_level);
+
+    if (priv->pending_resize_id) {
+        VNC_DEBUG("Cancel pending resize timer %lu", priv->pending_resize_id);
+        g_source_remove(priv->pending_resize_id);
+        priv->pending_resize_id = 0;
+    }
+    priv->pending_resize_id = g_timeout_add(500, do_desktop_resize, widget);
+    VNC_DEBUG("Scheduled pending resize timer %lu", priv->pending_resize_id);
+    return FALSE;
+}
+
 
 static void grab_notify(GtkWidget *widget, gboolean was_grabbed)
 {
@@ -1129,6 +1332,51 @@ static void realize_event(GtkWidget *widget)
                           priv->remote_cursor ? priv->remote_cursor : priv->null_cursor);
 }
 
+static void get_preferred_width(GtkWidget *widget,
+                                int *minwidth,
+                                int *defwidth)
+{
+    VncDisplay *obj = VNC_DISPLAY(widget);
+    VncDisplayPrivate *priv = obj->priv;
+
+    if (priv->conn != NULL &&
+        vnc_connection_is_initialized(priv->conn) &&
+        priv->fb &&
+        priv->force_size)
+        *defwidth = (priv->rotation == 0u || priv->rotation == 180u) ?
+                        vnc_framebuffer_get_width(VNC_FRAMEBUFFER(priv->fb)) :
+                        vnc_framebuffer_get_height(VNC_FRAMEBUFFER(priv->fb));
+    else
+        *defwidth = 0;
+
+    *defwidth = round(*defwidth * (double)priv->zoom_level / 100.0);
+
+    if (priv->force_size && !priv->allow_scaling)
+        *minwidth = *defwidth;
+}
+
+static void get_preferred_height(GtkWidget *widget,
+                                int *minheight,
+                                int *defheight)
+{
+    VncDisplay *obj = VNC_DISPLAY(widget);
+    VncDisplayPrivate *priv = obj->priv;
+
+    if (priv->conn != NULL &&
+        vnc_connection_is_initialized(priv->conn) &&
+        priv->fb &&
+        priv->force_size)
+        *defheight = (priv->rotation == 0u || priv->rotation == 180u) ?
+                        vnc_framebuffer_get_height(VNC_FRAMEBUFFER(priv->fb)) :
+                        vnc_framebuffer_get_width(VNC_FRAMEBUFFER(priv->fb));
+    else
+        *defheight = 0;
+
+    *defheight = round(*defheight * (double)priv->zoom_level / 100.0);
+
+    if (priv->force_size && !priv->allow_scaling)
+        *minheight = *defheight;
+}
 
 static void on_framebuffer_update(VncConnection *conn G_GNUC_UNUSED,
                                   int x, int y, int w, int h,
@@ -1137,14 +1385,18 @@ static void on_framebuffer_update(VncConnection *conn G_GNUC_UNUSED,
     GtkWidget *widget = GTK_WIDGET(opaque);
     VncDisplay *obj = VNC_DISPLAY(widget);
     VncDisplayPrivate *priv = obj->priv;
-    int ww, wh;
-    int fbw, fbh;
+    int offsetx, offsety;
+    int width, height;
+    double scalex, scaley;
+    int fbwidth, fbheight;
+    int winwidth, winheight;
 
-    fbw = vnc_framebuffer_get_width(VNC_FRAMEBUFFER(priv->fb));
-    fbh = vnc_framebuffer_get_height(VNC_FRAMEBUFFER(priv->fb));
-
-    ww = gdk_window_get_width(gtk_widget_get_window(widget));
-    wh = gdk_window_get_height(gtk_widget_get_window(widget));
+    get_render_region_info(widget,
+                           &offsetx, &offsety,
+                           &width, &height,
+                           &scalex, &scaley,
+                           &fbwidth, &fbheight,
+                           &winwidth, &winheight);
 
     /* If we have a pixmap, update the region which changed.
      * If we don't have a pixmap, the entire thing will be
@@ -1162,19 +1414,43 @@ static void on_framebuffer_update(VncConnection *conn G_GNUC_UNUSED,
         cairo_destroy(cr);
     }
 
+    switch (priv->rotation) {
+        /* This repeates the same transformation as in draw_event() above. */
+        /* To put cairo_matrix_t mtx into struct priv, and use here? */
+        int tmp;
+    case 0u:
+    default:
+        x *= scalex;
+        y *= scaley;
+        w *= scalex;
+        h *= scaley;
+        break;
+    case 90u:
+        tmp = x;
+        x = (fbheight - y - h) * scalex;
+        y = tmp * scaley;
+        tmp = w;
+        w = h * scalex;
+        h = tmp * scaley;
+        break;
+    case 180u:
+        x = (fbwidth - x - w) * scalex;
+        y = (fbheight - y - h) * scaley;
+        w *= scalex;
+        h *= scaley;
+        break;
+    case 270u:
+        tmp = x;
+        x = y * scalex;
+        y = (fbwidth - tmp - w) * scaley;
+        tmp = w;
+        w = h * scalex;
+        h = tmp * scaley;
+    }
+    x += offsetx;
+    y += offsety;
+
     if (priv->allow_scaling) {
-        double sx, sy;
-
-        /* Scale the VNC region to produce expose region */
-
-        sx = (double)ww / (double)fbw;
-        sy = (double)wh / (double)fbh;
-
-        x *= sx;
-        y *= sy;
-        w *= sx;
-        h *= sy;
-
         /* Without this, we get horizontal & vertical line artifacts
          * when drawing. This "fix" is somewhat dubious though. The
          * true mistake & fix almost certainly lies elsewhere.
@@ -1183,18 +1459,6 @@ static void on_framebuffer_update(VncConnection *conn G_GNUC_UNUSED,
         y -= 2;
         w += 4;
         h += 4;
-    } else {
-        int mw = 0, mh = 0;
-
-        /* Offset the VNC region to produce expose region */
-
-        if (ww > fbw)
-            mw = (ww - fbw) / 2;
-        if (wh > fbh)
-            mh = (wh - fbh) / 2;
-
-        x += mw;
-        y += mh;
     }
 
     gtk_widget_queue_draw_area(widget, x, y, w, h);
@@ -1211,14 +1475,30 @@ static void do_framebuffer_init(VncDisplay *obj,
                                 int width, int height, gboolean quiet)
 {
     VncDisplayPrivate *priv = obj->priv;
+    const VncPixelFormat *oldformat;
+    int oldwidth, oldheight;
 
     if (priv->conn == NULL || !vnc_connection_is_initialized(priv->conn))
         return;
 
     if (priv->fb) {
+        oldformat = vnc_framebuffer_get_remote_format(VNC_FRAMEBUFFER(priv->fb));
+        oldwidth = vnc_framebuffer_get_width(VNC_FRAMEBUFFER(priv->fb));
+        oldheight = vnc_framebuffer_get_height(VNC_FRAMEBUFFER(priv->fb));
+
+        if (oldwidth == width &&
+            oldheight == height &&
+            vnc_pixel_format_match(remoteFormat, oldformat)) {
+            VNC_DEBUG("Framebuffer size / format unchanged, skipping recreate");
+            return;
+        }
+
         g_object_unref(priv->fb);
         priv->fb = NULL;
     }
+    VNC_DEBUG("Re-creating framebuffer %dx%d after size/format change",
+              width, height);
+
     if (priv->fbCache) {
         cairo_surface_destroy(priv->fbCache);
         priv->fbCache = NULL;
@@ -1235,8 +1515,7 @@ static void do_framebuffer_init(VncDisplay *obj,
     priv->fb = vnc_cairo_framebuffer_new(width, height, remoteFormat);
     vnc_connection_set_framebuffer(priv->conn, VNC_FRAMEBUFFER(priv->fb));
 
-    if (priv->force_size)
-        gtk_widget_set_size_request(GTK_WIDGET(obj), width, height);
+    gtk_widget_queue_resize(GTK_WIDGET(obj));
 
     if (!quiet) {
         g_signal_emit(G_OBJECT(obj),
@@ -1253,6 +1532,14 @@ static void on_desktop_resize(VncConnection *conn G_GNUC_UNUSED,
     VncDisplay *obj = VNC_DISPLAY(opaque);
     VncDisplayPrivate *priv = obj->priv;
     const VncPixelFormat *remoteFormat;
+
+    if (priv->pending_resize_id) {
+        VNC_DEBUG("Cancel pending resize timer %lu", priv->pending_resize_id);
+        g_source_remove(priv->pending_resize_id);
+        priv->pending_resize_id = 0;
+        priv->last_resize_reqw = -1;
+        priv->last_resize_reqh = -1;
+    }
 
     remoteFormat = vnc_connection_get_pixel_format(priv->conn);
 
@@ -1273,6 +1560,18 @@ static void on_pixel_format_changed(VncConnection *conn G_GNUC_UNUSED,
     do_framebuffer_init(opaque, remoteFormat, width, height, TRUE);
 
     vnc_connection_framebuffer_update_request(priv->conn, 0, 0, 0, width, height);
+}
+
+static void on_desktop_rename(VncConnection *conn G_GNUC_UNUSED,
+                              const char *name,
+                              gpointer opaque)
+{
+    VncDisplay *obj = VNC_DISPLAY(opaque);
+
+    g_signal_emit(G_OBJECT(obj),
+                  signals[VNC_DESKTOP_RENAME],
+                  0,
+                  name);
 }
 
 static gboolean vnc_display_set_preferred_pixel_format(VncDisplay *display)
@@ -1604,6 +1903,21 @@ static void on_error(VncConnection *conn G_GNUC_UNUSED,
     VNC_DEBUG("VNC server error");
 }
 
+static void on_power_control_init(VncConnection *conn G_GNUC_UNUSED,
+                                  gpointer opaque)
+{
+    VncDisplay *obj = VNC_DISPLAY(opaque);
+
+    g_signal_emit(G_OBJECT(obj), signals[VNC_POWER_CONTROL_INITIALIZED], 0);
+}
+
+static void on_power_control_fail(VncConnection *conn G_GNUC_UNUSED,
+                                  gpointer opaque)
+{
+    VncDisplay *obj = VNC_DISPLAY(opaque);
+
+    g_signal_emit(G_OBJECT(obj), signals[VNC_POWER_CONTROL_FAILED], 0);
+}
 
 static void on_initialized(VncConnection *conn G_GNUC_UNUSED,
                            gpointer opaque)
@@ -1616,11 +1930,16 @@ static void on_initialized(VncConnection *conn G_GNUC_UNUSED,
      * server prefers when it has a choice to use */
     gint32 encodings[] = {  VNC_CONNECTION_ENCODING_TIGHT_JPEG5,
                             VNC_CONNECTION_ENCODING_TIGHT,
+                            VNC_CONNECTION_ENCODING_XVP,
                             VNC_CONNECTION_ENCODING_EXT_KEY_EVENT,
                             VNC_CONNECTION_ENCODING_LED_STATE,
+                            VNC_CONNECTION_ENCODING_EXTENDED_DESKTOP_RESIZE,
                             VNC_CONNECTION_ENCODING_DESKTOP_RESIZE,
+                            VNC_CONNECTION_ENCODING_DESKTOP_NAME,
+                            VNC_CONNECTION_ENCODING_LAST_RECT,
                             VNC_CONNECTION_ENCODING_WMVi,
                             VNC_CONNECTION_ENCODING_AUDIO,
+                            VNC_CONNECTION_ENCODING_ALPHA_CURSOR,
                             VNC_CONNECTION_ENCODING_RICH_CURSOR,
                             VNC_CONNECTION_ENCODING_XCURSOR,
                             VNC_CONNECTION_ENCODING_POINTER_CHANGE,
@@ -2092,6 +2411,9 @@ static void vnc_display_class_init(VncDisplayClass *klass)
     gtkwidget_class->grab_notify = grab_notify;
     gtkwidget_class->realize = realize_event;
     gtkwidget_class->destroy = vnc_display_destroy;
+    gtkwidget_class->configure_event = configure_event;
+    gtkwidget_class->get_preferred_width = get_preferred_width;
+    gtkwidget_class->get_preferred_height = get_preferred_height;
 
     object_class->finalize = vnc_display_finalize;
     object_class->get_property = vnc_display_get_property;
@@ -2220,6 +2542,17 @@ static void vnc_display_class_init(VncDisplayClass *klass)
                                                             G_PARAM_STATIC_NAME |
                                                             G_PARAM_STATIC_NICK |
                                                             G_PARAM_STATIC_BLURB));
+    g_object_class_install_property (object_class,
+                                     PROP_ALLOW_RESIZE,
+                                     g_param_spec_boolean ( "allow-resize",
+                                                            "Allow desktop resize",
+                                                            "Whether we should resize the desktop to match widget size",
+                                                            FALSE,
+                                                            G_PARAM_READWRITE |
+                                                            G_PARAM_CONSTRUCT |
+                                                            G_PARAM_STATIC_NAME |
+                                                            G_PARAM_STATIC_NICK |
+                                                            G_PARAM_STATIC_BLURB));
 
     g_object_class_install_property (object_class,
                                      PROP_SMOOTHING,
@@ -2234,6 +2567,32 @@ static void vnc_display_class_init(VncDisplayClass *klass)
                                                             G_PARAM_STATIC_BLURB));
 
     g_object_class_install_property (object_class,
+                                     PROP_KEEP_ASPECT_RATIO,
+                                     g_param_spec_boolean ( "keep-aspect-ratio",
+                                                            "Keep aspect ratio",
+                                                            "Keep the aspect ratio matching the framebuffer when scaling",
+                                                            FALSE,
+                                                            G_PARAM_READWRITE |
+                                                            G_PARAM_CONSTRUCT |
+                                                            G_PARAM_STATIC_NAME |
+                                                            G_PARAM_STATIC_NICK |
+                                                            G_PARAM_STATIC_BLURB));
+
+    g_object_class_install_property (object_class,
+                                     PROP_ROTATE,
+                                     g_param_spec_uint ( "rotation",
+                                                          "Rotate +90° clockwise",
+                                                          "Rotate the image of the remote desktop 90° clockwise",
+                                                          0,
+                                                          270,
+                                                          0,
+                                                          G_PARAM_READWRITE |
+                                                          G_PARAM_CONSTRUCT |
+                                                          G_PARAM_STATIC_NAME |
+                                                          G_PARAM_STATIC_NICK |
+                                                          G_PARAM_STATIC_BLURB));
+
+    g_object_class_install_property (object_class,
                                      PROP_DEPTH,
                                      g_param_spec_enum    ( "depth",
                                                             "Depth",
@@ -2245,6 +2604,19 @@ static void vnc_display_class_init(VncDisplayClass *klass)
                                                             G_PARAM_STATIC_NAME |
                                                             G_PARAM_STATIC_NICK |
                                                             G_PARAM_STATIC_BLURB));
+    g_object_class_install_property (object_class,
+                                     PROP_ZOOM_LEVEL,
+                                     g_param_spec_uint ( "zoom-level",
+                                                         "Zoom level",
+                                                         "Zoom percentage level",
+                                                         10,
+                                                         400,
+                                                         100,
+                                                         G_PARAM_READWRITE |
+                                                         G_PARAM_CONSTRUCT |
+                                                         G_PARAM_STATIC_NAME |
+                                                         G_PARAM_STATIC_NICK |
+                                                         G_PARAM_STATIC_BLURB));
     g_object_class_install_property (object_class,
                                      PROP_GRAB_KEYS,
                                      g_param_spec_boxed( "grab-keys",
@@ -2317,7 +2689,7 @@ static void vnc_display_class_init(VncDisplayClass *klass)
                       g_cclosure_marshal_VOID__BOXED,
                       G_TYPE_NONE,
                       1,
-                      G_TYPE_VALUE_ARRAY);
+                      g_value_array_get_type());
 
 
     signals[VNC_POINTER_GRAB] =
@@ -2377,6 +2749,18 @@ static void vnc_display_class_init(VncDisplayClass *klass)
                      2,
                      G_TYPE_INT, G_TYPE_INT);
 
+    signals[VNC_DESKTOP_RENAME] =
+        g_signal_new("vnc-desktop-rename",
+                     G_TYPE_FROM_CLASS(klass),
+                     G_SIGNAL_RUN_LAST | G_SIGNAL_NO_HOOKS,
+                     0,
+                     NULL,
+                     NULL,
+                     g_cclosure_marshal_VOID__STRING,
+                     G_TYPE_NONE,
+                     1,
+                     G_TYPE_STRING);
+
     signals[VNC_AUTH_FAILURE] =
         g_signal_new("vnc-auth-failure",
                      G_TYPE_FROM_CLASS(klass),
@@ -2424,13 +2808,34 @@ static void vnc_display_class_init(VncDisplayClass *klass)
                      G_TYPE_NONE,
                      0);
 
-    g_type_class_add_private(klass, sizeof(VncDisplayPrivate));
+    signals[VNC_POWER_CONTROL_INITIALIZED] =
+        g_signal_new("vnc-power-control-initialized",
+                     G_OBJECT_CLASS_TYPE (object_class),
+                     G_SIGNAL_RUN_LAST | G_SIGNAL_NO_HOOKS,
+                     0,
+                     NULL,
+                     NULL,
+                     g_cclosure_marshal_VOID__VOID,
+                     G_TYPE_NONE,
+                     0);
+
+    signals[VNC_POWER_CONTROL_FAILED] =
+        g_signal_new("vnc-power-control-failed",
+                     G_OBJECT_CLASS_TYPE (object_class),
+                     G_SIGNAL_RUN_LAST | G_SIGNAL_NO_HOOKS,
+                     0,
+                     NULL,
+                     NULL,
+                     g_cclosure_marshal_VOID__VOID,
+                     G_TYPE_NONE,
+                     0);
+
 }
 
 static void vnc_display_init(VncDisplay *display)
 {
     GtkWidget *widget = GTK_WIDGET(display);
-    VncDisplayPrivate *priv;
+    VncDisplayPrivate *priv = vnc_display_get_instance_private(display);
 
     gtk_widget_set_can_focus (widget, TRUE);
 
@@ -2453,8 +2858,8 @@ static void vnc_display_init(VncDisplay *display)
      */
     gtk_widget_set_double_buffered(widget, TRUE);
 
-    priv = display->priv = VNC_DISPLAY_GET_PRIVATE(display);
-    memset(priv, 0, sizeof(VncDisplayPrivate));
+    display->priv = priv;
+
     priv->last_x = -1;
     priv->last_y = -1;
     priv->absolute = TRUE;
@@ -2466,7 +2871,11 @@ static void vnc_display_init(VncDisplay *display)
     priv->local_pointer = FALSE;
     priv->shared_flag = FALSE;
     priv->force_size = TRUE;
+    priv->allow_resize = FALSE;
     priv->smoothing = TRUE;
+    priv->keep_aspect_ratio = FALSE;
+    priv->rotation = 0u;
+    priv->zoom_level = 100;
     priv->vncgrabseq = vnc_grab_sequence_new_from_string("Control_L+Alt_L");
     priv->vncactiveseq = g_new0(gboolean, priv->vncgrabseq->nkeysyms);
 
@@ -2530,6 +2939,8 @@ static void vnc_display_init(VncDisplay *display)
                      G_CALLBACK(on_framebuffer_update), display);
     g_signal_connect(G_OBJECT(priv->conn), "vnc-desktop-resize",
                      G_CALLBACK(on_desktop_resize), display);
+    g_signal_connect(G_OBJECT(priv->conn), "vnc-desktop-rename",
+                     G_CALLBACK(on_desktop_rename), display);
     g_signal_connect(G_OBJECT(priv->conn), "vnc-pixel-format-changed",
                      G_CALLBACK(on_pixel_format_changed), display);
     g_signal_connect(G_OBJECT(priv->conn), "vnc-auth-failure",
@@ -2550,6 +2961,10 @@ static void vnc_display_init(VncDisplay *display)
                      G_CALLBACK(on_disconnected), display);
     g_signal_connect(G_OBJECT(priv->conn), "vnc-error",
                      G_CALLBACK(on_error), display);
+    g_signal_connect(G_OBJECT(priv->conn), "vnc-power-control-initialized",
+                     G_CALLBACK(on_power_control_init), display);
+    g_signal_connect(G_OBJECT(priv->conn), "vnc-power-control-failed",
+                     G_CALLBACK(on_power_control_fail), display);
 
     priv->keycode_map = vnc_display_keymap_gdk2rfb_table(&priv->keycode_maplen);
 }
@@ -2575,7 +2990,7 @@ gboolean vnc_display_set_credential(VncDisplay *obj, int type, const gchar *data
 
 
 /**
- * vnc_display_set_poiter_local:
+ * vnc_display_set_pointer_local:
  * @obj: (transfer none): the VNC display widget
  * @enable: TRUE to show a local cursor, FALSE otherwise
  *
@@ -2887,6 +3302,8 @@ gboolean vnc_display_set_scaling(VncDisplay *obj,
             wh = gdk_window_get_height(gtk_widget_get_window(GTK_WIDGET(obj)));
             gtk_widget_queue_draw_area(GTK_WIDGET(obj), 0, 0, ww, wh);
         }
+
+        gtk_widget_queue_resize(GTK_WIDGET(obj));
     }
 
     return TRUE;
@@ -2894,9 +3311,9 @@ gboolean vnc_display_set_scaling(VncDisplay *obj,
 
 
 /**
- * vnc_display_force_size:
+ * vnc_display_set_force_size:
  * @obj: (transfer none): the VNC display widget
- * @enabled: TRUE to force the widget size, FALSE otherwise
+ * @enable: TRUE to force the widget size, FALSE otherwise
  *
  * Set whether the widget size will be forced to match the
  * remote desktop size. If the widget size does not match
@@ -2904,27 +3321,53 @@ gboolean vnc_display_set_scaling(VncDisplay *obj,
  * of the remote desktop may be hidden, or black borders
  * may be drawn.
  */
-void vnc_display_set_force_size(VncDisplay *obj, gboolean enabled)
+void vnc_display_set_force_size(VncDisplay *obj, gboolean enable)
 {
     g_return_if_fail (VNC_IS_DISPLAY (obj));
-    obj->priv->force_size = enabled;
+    obj->priv->force_size = enable;
+
+    if (obj->priv->fb != NULL) {
+        gtk_widget_queue_resize(GTK_WIDGET(obj));
+    }
 }
 
 
 /**
- * vnc_display_smoothing:
+ * vnc_display_set_allow_resize:
  * @obj: (transfer none): the VNC display widget
- * @enabled: TRUE to enable smooth scaling, FALSE otherwise
+ * @enable: TRUE to allow the desktop resize, FALSE otherwise
+ *
+ * Set whether changes in the widget size will be translated
+ * into requests to resize the remote desktop. Resizing of
+ * the remote desktop is not guaranteed to be honoured by
+ * servers, but when it is, it will avoid the need to do
+ * scaling.
+ */
+void vnc_display_set_allow_resize(VncDisplay *obj, gboolean enable)
+{
+    g_return_if_fail (VNC_IS_DISPLAY (obj));
+    obj->priv->allow_resize = enable;
+
+    if (obj->priv->fb != NULL && enable) {
+        gtk_widget_queue_resize(GTK_WIDGET(obj));
+    }
+}
+
+
+/**
+ * vnc_display_set_smoothing:
+ * @obj: (transfer none): the VNC display widget
+ * @enable: TRUE to enable smooth scaling, FALSE otherwise
  *
  * Set whether pixels are smoothly interpolated when scaling,
  * to avoid aliasing.
  */
-void vnc_display_set_smoothing(VncDisplay *obj, gboolean enabled)
+void vnc_display_set_smoothing(VncDisplay *obj, gboolean enable)
 {
     int ww, wh;
 
     g_return_if_fail (VNC_IS_DISPLAY (obj));
-    obj->priv->smoothing = enabled;
+    obj->priv->smoothing = enable;
 
     if (obj->priv->fb != NULL) {
         GdkWindow *window = gtk_widget_get_window(GTK_WIDGET(obj));
@@ -2934,6 +3377,52 @@ void vnc_display_set_smoothing(VncDisplay *obj, gboolean enabled)
             wh = gdk_window_get_height(gtk_widget_get_window(GTK_WIDGET(obj)));
             gtk_widget_queue_draw_area(GTK_WIDGET(obj), 0, 0, ww, wh);
         }
+    }
+}
+
+
+/**
+ * vnc_display_set_keep_aspect_ratio:
+ * @obj: (transfer none): the VNC display widget
+ * @enable: TRUE to keep aspect ratio, FALSE otherwise
+ *
+ * Set whether the aspect ratio of the framebuffer is preserved
+ * when scaling.
+ */
+void vnc_display_set_keep_aspect_ratio(VncDisplay *obj, gboolean enable)
+{
+    int ww, wh;
+
+    g_return_if_fail (VNC_IS_DISPLAY (obj));
+    obj->priv->keep_aspect_ratio = enable;
+
+    if (obj->priv->fb != NULL) {
+        GdkWindow *window = gtk_widget_get_window(GTK_WIDGET(obj));
+
+        if (window != NULL) {
+            ww = gdk_window_get_width(gtk_widget_get_window(GTK_WIDGET(obj)));
+            wh = gdk_window_get_height(gtk_widget_get_window(GTK_WIDGET(obj)));
+            gtk_widget_queue_draw_area(GTK_WIDGET(obj), 0, 0, ww, wh);
+        }
+    }
+}
+
+
+/**
+ * vnc_display_set_rotation:
+ * @obj: (transfer none): the VNC display widget
+ * @rotation: The angle of rotation, degrees clockwise.
+ *
+ * Set the rotation angle to view the display of the remote desktop, in
+ * clockwise direction.
+ */
+void vnc_display_set_rotation(VncDisplay *obj, guint rotation)
+{
+    g_return_if_fail (VNC_IS_DISPLAY (obj));
+    obj->priv->rotation = rotation % 360u;
+
+    if (obj->priv->fb != NULL) {
+        gtk_widget_queue_resize(GTK_WIDGET(obj));
     }
 }
 
@@ -2997,6 +3486,23 @@ gboolean vnc_display_get_force_size(VncDisplay *obj)
 
 
 /**
+ * vnc_display_get_allow_resize:
+ * @obj: (transfer none): the VNC display widget
+ *
+ * Determine whether widget size is used to request
+ * rsize of the remote desktop
+ *
+ * Returns: TRUE if allow resize is enabled, FALSE otherwise
+ */
+gboolean vnc_display_get_allow_resize(VncDisplay *obj)
+{
+    g_return_val_if_fail (VNC_IS_DISPLAY (obj), FALSE);
+
+    return obj->priv->allow_resize;
+}
+
+
+/**
  * vnc_display_get_smoothing:
  * @obj: (transfer none): the VNC display widget
  *
@@ -3010,6 +3516,39 @@ gboolean vnc_display_get_smoothing(VncDisplay *obj)
     g_return_val_if_fail (VNC_IS_DISPLAY (obj), FALSE);
 
     return obj->priv->smoothing;
+}
+
+
+/**
+ * vnc_display_get_keep_aspect_ratio:
+ * @obj: (transfer none): the VNC display widget
+ *
+ * Determine whether the framebuffer aspect ratio is preserved
+ * when scaling.
+ *
+ * Returns: TRUE if aspect ratio is preserved, FALSE otherwise
+ */
+gboolean vnc_display_get_keep_aspect_ratio(VncDisplay *obj)
+{
+    g_return_val_if_fail (VNC_IS_DISPLAY (obj), FALSE);
+
+    return obj->priv->keep_aspect_ratio;
+}
+
+
+/**
+ * vnc_display_get_rotation:
+ * @obj: (transfer none): the VNC display widget
+ *
+ * Determine the current rotation angle of the remote desktop.
+ *
+ * Returns: the rotation angle in clockwise direction
+ */
+guint vnc_display_get_rotation(VncDisplay *obj)
+{
+    g_return_val_if_fail (VNC_IS_DISPLAY (obj), 0u);
+
+    return obj->priv->rotation;
 }
 
 
@@ -3133,6 +3672,51 @@ gboolean vnc_display_get_read_only(VncDisplay *obj)
 
 
 /**
+ * vnc_display_set_zoom_level:
+ * @obj: (transfer none): the VNC display widget
+ * @zoom: the zoom percentage level
+ *
+ * Requests a constant scaling factor to be applied to the remote
+ * desktop. The @zoom value is a percentage in the range 10-400.
+ *
+ * If scaling mode is not active, then this results in the remote
+ * desktop always being rendered at the requested zoom level.
+ *
+ * If scaling mode is active, then the remote desktop will be
+ * scaled to fit the widget regardless of the zoom level.
+ *
+ * In both cases, when the remote desktop size changes, the
+ * widget preferred size will reflect the zoom level.
+ */
+void vnc_display_set_zoom_level(VncDisplay *obj, guint zoom)
+{
+    g_return_if_fail (VNC_IS_DISPLAY (obj));
+
+    if (zoom < 10)
+        zoom = 10;
+    if (zoom > 400)
+        zoom = 400;
+
+    obj->priv->zoom_level = zoom;
+}
+
+/**
+ * vnc_display_get_zoom_level:
+ * @obj: (transfer none): the VNC display widget
+ *
+ * Determine the current constant scaling factor.
+ *
+ * Returns: the zoom percentage level between 10-400
+ */
+guint vnc_display_get_zoom_level(VncDisplay *obj)
+{
+    g_return_val_if_fail (VNC_IS_DISPLAY (obj), 100);
+
+    return obj->priv->zoom_level;
+}
+
+
+/**
  * vnc_display_is_pointer_absolute:
  * @obj: (transfer none): the VNC display widget
  *
@@ -3205,11 +3789,3 @@ vnc_display_request_update(VncDisplay *obj)
                                                      vnc_connection_get_width(obj->priv->conn),
                                                      vnc_connection_get_width(obj->priv->conn));
 }
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

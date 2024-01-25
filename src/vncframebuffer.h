@@ -122,11 +122,3 @@ void vnc_framebuffer_set_color_map(VncFramebuffer *fb,
 G_END_DECLS
 
 #endif /* VNC_FRAMEBUFFER_H */
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

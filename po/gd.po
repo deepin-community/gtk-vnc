@@ -6,8 +6,8 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: gtk-vnc\n"
-"Report-Msgid-Bugs-To: FULL NAME <EMAIL@ADDRESS>\n"
-"POT-Creation-Date: 2013-12-22 13:27+0000\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2021-03-31 15:11+0100\n"
 "PO-Revision-Date: 2014-02-07 12:17+0100\n"
 "Last-Translator: GunChleoc <fios@foramnagaidhlig.net>\n"
 "Language-Team: Fòram na Gàidhlig http://www.foramnagaidhlig.net\n"
@@ -20,14 +20,14 @@ msgstr ""
 "X-Generator: Virtaal 0.7.1\n"
 "X-Launchpad-Export-Date: 2014-02-07 11:56+0000\n"
 
-#: ../src/vncdisplay.c:167
+#: src/vncdisplay.c:175
 msgid "Enables debug output"
 msgstr "Cuiridh seo às-chur dì-bhugachaidh an comas"
 
-#: ../src/vncdisplay.c:2556
+#: src/vncdisplay.c:3502
 msgid "GTK-VNC Options:"
 msgstr "Roghainnean GTK-VNC:"
 
-#: ../src/vncdisplay.c:2556
+#: src/vncdisplay.c:3502
 msgid "Show GTK-VNC Options"
 msgstr "Seall na roghainnean GTK-VNC"

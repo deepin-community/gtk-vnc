@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: gtk-vnc\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2016-08-18 22:11+0200\n"
+"POT-Creation-Date: 2021-03-31 15:11+0100\n"
 "PO-Revision-Date: 2012-09-04 15:48+0200\n"
 "Last-Translator: Piotr Drąg <piotrdrag@gmail.com>\n"
 "Language-Team: Polish <community-poland@mozilla.org>\n"
@@ -19,14 +19,14 @@ msgstr ""
 "Plural-Forms: nplurals=3; plural=(n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 "
 "|| n%100>=20) ? 1 : 2);\n"
 
-#: ../src/vncdisplay.c:180
+#: src/vncdisplay.c:175
 msgid "Enables debug output"
 msgstr "Włącza wyjście debugowania"
 
-#: ../src/vncdisplay.c:3142
+#: src/vncdisplay.c:3502
 msgid "GTK-VNC Options:"
 msgstr "Opcje biblioteki GTK-VNC:"
 
-#: ../src/vncdisplay.c:3142
+#: src/vncdisplay.c:3502
 msgid "Show GTK-VNC Options"
 msgstr "Wyświetla opcje biblioteki GTK-VNC"

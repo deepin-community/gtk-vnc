@@ -1,4 +1,5 @@
 libgvnc-1.0.so.0 libgvnc-1.0-0 #MINVER#
+* Build-Depends-Package: libgvnc-1.0-dev
  vnc_audio_format_copy@Base 0.5.0
  vnc_audio_format_free@Base 0.5.0
  vnc_audio_format_get_type@Base 0.5.0
@@ -36,6 +37,7 @@ libgvnc-1.0.so.0 libgvnc-1.0-0 #MINVER#
  vnc_connection_get_ledstate@Base 0.5.3
  vnc_connection_get_name@Base 0.4.1
  vnc_connection_get_pixel_format@Base 0.4.1
+ vnc_connection_get_power_control@Base 1.3.0
  vnc_connection_get_shared@Base 0.4.1
  vnc_connection_get_type@Base 0.4.1
  vnc_connection_get_width@Base 0.4.1
@@ -49,6 +51,9 @@ libgvnc-1.0.so.0 libgvnc-1.0-0 #MINVER#
  vnc_connection_open_fd_with_hostname@Base 0.5.1
  vnc_connection_open_host@Base 0.4.1
  vnc_connection_pointer_event@Base 0.4.1
+ vnc_connection_power_action_get_type@Base 1.3.0
+ vnc_connection_power_control@Base 1.3.0
+ vnc_connection_resize_status_get_type@Base 1.3.0
  vnc_connection_set_audio@Base 0.5.0
  vnc_connection_set_audio_format@Base 0.5.0
  vnc_connection_set_auth_subtype@Base 0.4.1
@@ -58,6 +63,7 @@ libgvnc-1.0.so.0 libgvnc-1.0-0 #MINVER#
  vnc_connection_set_framebuffer@Base 0.4.1
  vnc_connection_set_pixel_format@Base 0.4.1
  vnc_connection_set_shared@Base 0.4.1
+ vnc_connection_set_size@Base 1.3.0
  vnc_connection_shutdown@Base 0.4.1
  vnc_cursor_get_data@Base 0.4.1
  vnc_cursor_get_height@Base 0.4.1
@@ -82,6 +88,7 @@ libgvnc-1.0.so.0 libgvnc-1.0-0 #MINVER#
  vnc_pixel_format_copy@Base 0.4.1
  vnc_pixel_format_free@Base 0.4.1
  vnc_pixel_format_get_type@Base 0.4.1
+ vnc_pixel_format_match@Base 1.3.0
  vnc_pixel_format_new@Base 0.4.1
  vnc_util_check_version@Base 0.4.2
  vnc_util_get_debug@Base 0.4.1
@@ -89,5 +96,6 @@ libgvnc-1.0.so.0 libgvnc-1.0-0 #MINVER#
  vnc_util_get_version_string@Base 0.4.2
  vnc_util_set_debug@Base 0.4.1
 libgvncpulse-1.0.so.0 libgvnc-1.0-0 #MINVER#
+* Build-Depends-Package: libgvnc-1.0-dev
  vnc_audio_pulse_get_type@Base 0.5.0
  vnc_audio_pulse_new@Base 0.5.0

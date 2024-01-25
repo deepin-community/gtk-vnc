@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: GTK-VNC\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2012-11-09 13:16+0200\n"
+"POT-Creation-Date: 2021-03-31 15:11+0100\n"
 "PO-Revision-Date: 2012-11-09 13:17+0200\n"
 "Last-Translator: Yaron Shahrabani <sh.yaron@gmail.com>\n"
 "Language-Team: Hebrew <sh.yaron@gmail.com>\n"
@@ -20,15 +20,14 @@ msgstr ""
 "X-Poedit-Country: ISRAEL\n"
 "X-Poedit-SourceCharset: utf-8\n"
 
-#: ../src/vncdisplay.c:166
+#: src/vncdisplay.c:175
 msgid "Enables debug output"
 msgstr "הפעלת פלט לניפוי שגיאות"
 
-#: ../src/vncdisplay.c:2473
+#: src/vncdisplay.c:3502
 msgid "GTK-VNC Options:"
 msgstr "אפשרויות GTK-VNC:"
 
-#: ../src/vncdisplay.c:2473
+#: src/vncdisplay.c:3502
 msgid "Show GTK-VNC Options"
 msgstr "הצגת אפשרויות GTK-VNC"
-

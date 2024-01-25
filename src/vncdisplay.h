@@ -134,14 +134,26 @@ gboolean vnc_display_get_scaling(VncDisplay *obj);
 void vnc_display_set_force_size(VncDisplay *obj, gboolean enable);
 gboolean vnc_display_get_force_size(VncDisplay *obj);
 
+void vnc_display_set_allow_resize(VncDisplay *obj, gboolean enable);
+gboolean vnc_display_get_allow_resize(VncDisplay *obj);
+
 void vnc_display_set_smoothing(VncDisplay *obj, gboolean enable);
 gboolean vnc_display_get_smoothing(VncDisplay *obj);
+
+void vnc_display_set_keep_aspect_ratio(VncDisplay *obj, gboolean enable);
+gboolean vnc_display_get_keep_aspect_ratio(VncDisplay *obj);
+
+void vnc_display_set_rotation(VncDisplay *obj, guint rotation);
+guint vnc_display_get_rotation(VncDisplay *obj);
 
 void vnc_display_set_shared_flag(VncDisplay *obj, gboolean shared);
 gboolean vnc_display_get_shared_flag(VncDisplay *obj);
 
 void vnc_display_set_depth(VncDisplay *obj, VncDisplayDepthColor depth);
 VncDisplayDepthColor vnc_display_get_depth(VncDisplay *obj);
+
+void vnc_display_set_zoom_level(VncDisplay *obj, guint zoom);
+guint vnc_display_get_zoom_level(VncDisplay *obj);
 
 void vnc_display_force_grab(VncDisplay *obj, gboolean enable);
 
@@ -155,10 +167,3 @@ gboolean vnc_display_request_update(VncDisplay *obj);
 G_END_DECLS
 
 #endif /* VNC_DISPLAY_H */
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

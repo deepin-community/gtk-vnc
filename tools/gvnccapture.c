@@ -136,6 +136,16 @@ static const guint preferable_auths[] = {
     VNC_CONNECTION_AUTH_NONE
 };
 
+static const guint preferable_vencrypt_auths[] = {
+    VNC_CONNECTION_AUTH_VENCRYPT_X509SASL,
+    VNC_CONNECTION_AUTH_VENCRYPT_X509PLAIN,
+    VNC_CONNECTION_AUTH_VENCRYPT_X509VNC,
+    VNC_CONNECTION_AUTH_VENCRYPT_X509NONE,
+    VNC_CONNECTION_AUTH_VENCRYPT_TLSSASL,
+    VNC_CONNECTION_AUTH_VENCRYPT_TLSPLAIN,
+    VNC_CONNECTION_AUTH_VENCRYPT_TLSVNC,
+    VNC_CONNECTION_AUTH_VENCRYPT_TLSNONE,
+};
 
 #ifndef G_OS_WIN32
 static gchar *
@@ -235,7 +245,7 @@ static void do_vnc_framebuffer_update(VncConnection *conn,
                         capture->output);
         }
         vnc_connection_shutdown(conn);
-        g_main_quit(capture->loop);
+        g_main_loop_quit(capture->loop);
     }
 }
 
@@ -339,7 +349,7 @@ static void do_vnc_disconnected(VncConnection *conn G_GNUC_UNUSED,
         else
             g_print("Unable to connect to %s:%d\n", capture->host, capture->port - 5900);
     }
-    g_main_quit(capture->loop);
+    g_main_loop_quit(capture->loop);
 }
 
 static void do_vnc_auth_credential(VncConnection *conn, GValueArray *credList, gpointer opaque)
@@ -400,34 +410,76 @@ static void do_vnc_auth_credential(VncConnection *conn, GValueArray *credList, g
     g_free(data);
 }
 
+
+static int do_vnc_auth_choose(const guint *prefer,
+                              gsize nprefer,
+                              GValueArray *avail)
+{
+    guint i, j;
+
+    for (i = 0 ; i < nprefer ; i++) {
+        int pref = prefer[i];
+
+        for (j = 0 ; j < avail->n_values ; j++) {
+            GValue *type = g_value_array_get_nth(avail, j);
+            VNC_DEBUG("Compare %d vs %d", pref, g_value_get_enum(type));
+            if (pref == g_value_get_enum(type)) {
+                VNC_DEBUG("Chosen auth %d", pref);
+                return pref;
+            }
+        }
+    }
+
+    GValue *type = g_value_array_get_nth(avail, 0);
+    VNC_DEBUG("Chosen default auth %d", g_value_get_enum(type));
+    return g_value_get_enum(type);
+}
+
+static void do_vnc_auth_choose_subtype(VncConnection *conn,
+                                       int type,
+                                       GValueArray *subtypes,
+                                       gpointer opaque G_GNUC_UNUSED)
+{
+    guint auth;
+
+    if (!subtypes->n_values) {
+        VNC_DEBUG("No auth subtypes to choose from");
+        return;
+    }
+
+    if (type == VNC_CONNECTION_AUTH_TLS) {
+        auth = do_vnc_auth_choose(preferable_auths,
+                                  G_N_ELEMENTS(preferable_auths),
+                                  subtypes);
+    } else if (type == VNC_CONNECTION_AUTH_VENCRYPT) {
+        auth = do_vnc_auth_choose(preferable_vencrypt_auths,
+                                  G_N_ELEMENTS(preferable_vencrypt_auths),
+                                  subtypes);
+    } else {
+        VNC_DEBUG("Unexpected stackable auth type %u", type);
+        vnc_connection_shutdown(conn);
+        return;
+    }
+
+    vnc_connection_set_auth_subtype(conn, auth);
+}
+
+
 static void do_vnc_auth_choose_type(VncConnection *conn,
                                     GValueArray *types,
                                     gpointer opaque G_GNUC_UNUSED)
 {
-    guint i, j;
-
+    guint auth;
     if (!types->n_values) {
         VNC_DEBUG("No auth types to choose from");
         return;
     }
 
-    for (i = 0 ; i < G_N_ELEMENTS(preferable_auths) ; i++) {
-        int pref = preferable_auths[i];
+    auth = do_vnc_auth_choose(preferable_auths,
+                              G_N_ELEMENTS(preferable_auths),
+                              types);
 
-        for (j = 0 ; j < types->n_values ; j++) {
-            GValue *type = g_value_array_get_nth(types, j);
-            VNC_DEBUG("Compare %d vs %d", pref, g_value_get_enum(type));
-            if (pref == g_value_get_enum(type)) {
-                VNC_DEBUG("Chosen auth %d", pref);
-                vnc_connection_set_auth_type(conn, pref);
-                return;
-            }
-        }
-    }
-
-    GValue *type = g_value_array_get_nth(types, 0);
-    VNC_DEBUG("Chosen default auth %d", g_value_get_enum(type));
-    vnc_connection_set_auth_type(conn, g_value_get_enum(type));
+    vnc_connection_set_auth_type(conn, auth);
 }
 
 
@@ -528,7 +580,7 @@ int main(int argc, char **argv)
     g_signal_connect(capture->conn, "vnc-auth-choose-type",
                      G_CALLBACK(do_vnc_auth_choose_type), capture);
     g_signal_connect(capture->conn, "vnc-auth-choose-subtype",
-                     G_CALLBACK(do_vnc_auth_choose_type), capture);
+                     G_CALLBACK(do_vnc_auth_choose_subtype), capture);
     g_signal_connect(capture->conn, "vnc-auth-credential",
                      G_CALLBACK(do_vnc_auth_credential), capture);
     g_signal_connect(capture->conn, "vnc-desktop-resize",
@@ -554,11 +606,3 @@ int main(int argc, char **argv)
 
     return ret;
 }
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

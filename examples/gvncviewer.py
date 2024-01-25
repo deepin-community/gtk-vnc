@@ -18,17 +18,47 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301 USA
 
+from __future__ import print_function
+
+import sys
+
+usage = """
+usage: gvncviewer.py <host>[:<display>] [password]
+       gvncviewer.py unix:<path> [password]
+
+Connect to the given <host> and <display>. If the <display> is omitted,
+it defaults to 0.
+
+Alternatively, a unix domain socket can be specified using unix:<path>.
+"""
+
+if "-h" in sys.argv or "--help" in sys.argv:
+    print(usage)
+    sys.exit(0)
+
+if len(sys.argv) != 2 and len(sys.argv) != 3:
+    print(usage)
+    sys.exit(1)
+
+
+# a fancy 'print_nothing' lambda function
+info = lambda *args, **kwargs : None
+
+if "-v" in sys.argv:
+	info = print
+	sys.argv.remove("-v")
+
+if "--verbose" in sys.argv:
+	info = print
+	sys.argv.remove("--verbose")
+
+
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('GtkVnc', '2.0')
 from gi.repository import Gtk
 from gi.repository import Gdk
 from gi.repository import GtkVnc
-import sys
-
-if len(sys.argv) != 2 and len(sys.argv) != 3:
-    print "syntax: gvncviewer.py host:display [password]"
-    sys.exit(1)
 
 def set_title(vnc, window, grabbed):
     name = vnc.get_name()
@@ -48,12 +78,16 @@ def set_title(vnc, window, grabbed):
     window.set_title("%s%s - GVncViewer" % (subtitle, name))
 
 def vnc_screenshot(src, ev, vnc):
-    if ev.keyval == Gdk.keyval_from_name("F11"):
+    if ev.keyval == Gdk.KEY_F11:
         pix = vnc.get_pixbuf()
-        pix.save("gvncviewer.png", "png", { "tEXt::Generator App": "gvncviewer.py" })
-        print "Screenshot saved to gvncviewer.png"
+        pix.savev("gvncviewer.png", "png", ["tEXt::Generator App"], ["gvncviewer.py"])
+        info("Screenshot saved to gvncviewer.png")
 
     return False
+
+def vnc_close(src, window, data = None):
+    info("Window closed by user")
+    Gtk.main_quit()
 
 def vnc_grab(src, window):
     set_title(src, window, True)
@@ -62,38 +96,46 @@ def vnc_ungrab(src, window):
     set_title(src, window, False)
 
 def vnc_connected(src):
-    print "Connected to server"
+    info("Connected to server")
 
 def vnc_initialized(src, window):
-    print "Connection initialized"
+    info("Connection initialized")
     set_title(src, window, False)
     window.show_all()
 
 def vnc_disconnected(src):
-    print "Disconnected from server"
+    info("Disconnected from server")
     Gtk.main_quit()
 
 def send_caf1(src, vnc):
-    print "Send Ctrl+Alt+F1"
-    vnc.send_keys(["Control_L", "Alt_L", "F1"])
+    info("Send Ctrl+Alt+F1")
+    vnc.send_keys([Gdk.KEY_Control_L, Gdk.KEY_Alt_L, Gdk.KEY_F1])
+
+def send_caf2(src, vnc):
+    info("Send Ctrl+Alt+F2")
+    vnc.send_keys([Gdk.KEY_Control_L, Gdk.KEY_Alt_L, Gdk.KEY_F2])
+
+def send_caf3(src, vnc):
+    info("Send Ctrl+Alt+F3")
+    vnc.send_keys([Gdk.KEY_Control_L, Gdk.KEY_Alt_L, Gdk.KEY_F3])
 
 def send_caf7(src, vnc):
-    print "Send Ctrl+Alt+F7"
-    vnc.send_keys(["Control_L", "Alt_L", "F7"])
+    info("Send Ctrl+Alt+F7")
+    vnc.send_keys([Gdk.KEY_Control_L, Gdk.KEY_Alt_L, Gdk.KEY_F7])
 
 def send_cad(src, vnc):
-    print "Send Ctrl+Alt+Del"
-    vnc.send_keys(["Control_L", "Alt_L", "Del"])
+    info("Send Ctrl+Alt+Del")
+    vnc.send_keys([Gdk.KEY_Control_L, Gdk.KEY_Alt_L, Gdk.KEY_Delete])
 
 def send_cab(src, vnc):
-    print "Send Ctrl+Alt+BackSpace"
-    vnc.send_keys(["Control_L", "Alt_L", "BackSpace"])
+    info("Send Ctrl+Alt+BackSpace")
+    vnc.send_keys([Gdk.KEY_Control_L, Gdk.KEY_Alt_L, Gdk.KEY_BackSpace])
 
 def vnc_auth_cred(src, credList):
     prompt = 0
     data = []
 
-    print type(credList)
+    info(type(credList))
     for i in range(credList.n_values):
         data.append(None)
         if credList.get_nth(i) in (GtkVnc.DisplayCredential.USERNAME, GtkVnc.DisplayCredential.PASSWORD):
@@ -145,10 +187,10 @@ def vnc_auth_cred(src, credList):
     for i in range(credList.n_values):
         if i < len(data) and data[i] != None:
             if src.set_credential(credList.get_nth(i), data[i]):
-                print "Cannot set credential type %d" % (credList.get_nth(i))
+                info("Cannot set credential type %d" % (credList.get_nth(i)))
                 src.close()
         else:
-            print "Unsupported credential type %d" % (credList.get_nth(i))
+            info("Unsupported credential type %d" % (credList.get_nth(i)))
             src.close()
 
 window = Gtk.Window()
@@ -158,23 +200,29 @@ layout = Gtk.VBox()
 window.add(layout)
 
 menubar = Gtk.MenuBar()
-sendkeys = Gtk.MenuItem("_Send keys")
+sendkeys = Gtk.MenuItem.new_with_mnemonic("_Send keys")
 menubar.append(sendkeys)
 
 buttons = Gtk.HBox()
-caf1 = Gtk.MenuItem("Ctrl+Alt+F_1")
-caf7 = Gtk.MenuItem("Ctrl+Alt+F_7")
-cad = Gtk.MenuItem("Ctrl+Alt+_Del")
-cab = Gtk.MenuItem("Ctrl+Alt+_Backspace")
+caf1 = Gtk.MenuItem.new_with_mnemonic("Ctrl+Alt+F_1")
+caf2 = Gtk.MenuItem.new_with_mnemonic("Ctrl+Alt+F_2")
+caf3 = Gtk.MenuItem.new_with_mnemonic("Ctrl+Alt+F_3")
+caf7 = Gtk.MenuItem.new_with_mnemonic("Ctrl+Alt+F_7")
+cad = Gtk.MenuItem.new_with_mnemonic("Ctrl+Alt+_Del")
+cab = Gtk.MenuItem.new_with_mnemonic("Ctrl+Alt+_Backspace")
 
 submenu = Gtk.Menu()
 submenu.append(caf1)
+submenu.append(caf2)
+submenu.append(caf3)
 submenu.append(caf7)
 submenu.append(cad)
 submenu.append(cab)
 sendkeys.set_submenu(submenu)
 
 caf1.connect("activate", send_caf1, vnc)
+caf2.connect("activate", send_caf2, vnc)
+caf3.connect("activate", send_caf3, vnc)
 caf7.connect("activate", send_caf7, vnc)
 cad.connect("activate", send_cad, vnc)
 cab.connect("activate", send_cab, vnc)
@@ -196,16 +244,29 @@ vnc.set_grab_keys(grab_keys)
 if len(sys.argv) == 3:
     vnc.set_credential(GtkVnc.DisplayCredential.PASSWORD, sys.argv[2])
 
-disp = sys.argv[1].find(":")
-if disp != -1:
-    host = sys.argv[1][:disp]
-    port = str(5900 + int(sys.argv[1][disp+1:]))
-else:
-    host = sys.argv[1]
-    port = "5900"
-print "Connecting to %s %s" % (host, port)
+target = sys.argv[1]
 
-vnc.open_host(host, port)
+if ":" in target:
+    host, target = target.split(":", 1)
+
+    if host == 'unix':
+        path = target  # path of the domain socket
+    else:
+        port = str(5900 + int(target)) # port number of the display
+else:
+    host = target
+    port = "5900"
+
+if host == "unix":
+    import socket
+    domain_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, 0)
+    info("Connecting to domain socket", path)
+    domain_socket.connect(path)
+    vnc.open_fd(domain_socket.fileno())
+else:
+    info("Connecting to %s:%s" % (host, port))
+    vnc.open_host(host, port)
+
 vnc.connect("vnc-pointer-grab", vnc_grab, window)
 vnc.connect("vnc-pointer-ungrab", vnc_ungrab, window)
 
@@ -215,5 +276,6 @@ vnc.connect("vnc-disconnected", vnc_disconnected)
 vnc.connect("vnc-auth-credential", vnc_auth_cred)
 
 window.connect("key-press-event", vnc_screenshot, vnc)
+window.connect("destroy", vnc_close, window)
 
 Gtk.main()

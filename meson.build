@@ -1,13 +1,13 @@
 project(
   'gtk-vnc','c',
-  version: '1.0.0',
+  version: '1.3.1',
   license: 'LGPLv2.1+',
   default_options: [
     'buildtype=debugoptimized',
     'c_std=gnu99',
-    'warning_level=1',
+    'warning_level=2',
   ],
-  meson_version: '>= 0.46.0'
+  meson_version: '>= 0.49.0'
 )
 
 version_info = meson.project_version().split('.')
@@ -21,7 +21,21 @@ conf_data.set('version_major', version_major)
 conf_data.set('version_minor', version_minor)
 conf_data.set('version_micro', version_micro)
 
-run_target('syntax-check', command: ['make', '-C', meson.source_root(), 'syntax-check'])
+# ninja dist helper
+meson.add_dist_script('build-aux/dist.sh', meson.source_root(), meson.build_root())
+
+git = run_command('test', '-d', '.git', check: false).returncode() == 0
+
+if git
+  test(
+    'syntax-check',
+    find_program('@0@/build-aux/syntax-check'.format(meson.source_root())),
+    suite: 'style',
+    env: [
+        'MESON_SOURCE_ROOT=@0@'.format(meson.source_root()),
+    ],
+  )
+endif
 
 pod2man = find_program('pod2man')
 
@@ -29,8 +43,20 @@ cc = meson.get_compiler('c')
 
 coroutine = get_option('with-coroutine')
 
+uctx_args = []
+if host_machine.system() == 'darwin'
+  uctx_args += ['-D_XOPEN_SOURCE=600']
+endif
+has_ucontext = true
+foreach uctx_func : ['makecontext', 'swapcontext', 'getcontext']
+  if not cc.has_function(uctx_func, prefix: '#include <ucontext.h>', args: uctx_args)
+    has_ucontext = false
+    break
+  endif
+endforeach
+
 if coroutine == 'auto'
-  if host_machine.system() == 'windows'
+  if host_machine.system() == 'windows' or not has_ucontext
     coroutine = 'gthread'
   else
     coroutine = 'ucontext'
@@ -38,32 +64,36 @@ if coroutine == 'auto'
 endif
 
 if coroutine == 'ucontext'
+  if not has_ucontext
+    error('ucontext requested, but not available')
+  endif
   conf_data.set('WITH_UCONTEXT', true)
 elif coroutine != 'gthread'
   error('Unknown coroutine backend')
 endif
 
 # gvnc
-glib_min_version = '2.42.0'
-gdk_pixbuf_min_version = '2.12.0'
-gcrypt_min_version = '1.5.0'
-gnutls_min_version = '3.1.18'
-# Should be newer, but fedora mingw pkgconfig is fubar
-zlib_min_version = '1.2.5'
-libsasl_min_version = '2.1.26'
+glib_min_version = '2.56.0'
+glib_min_version_symbol='GLIB_VERSION_2_56'
+gdk_pixbuf_min_version = '2.36.0'
+gcrypt_min_version = '1.8.0'
+gnutls_min_version = '3.6.0'
+zlib_min_version = '1.2.11'
+libsasl_min_version = '2.1.27'
 
 # gtk-vnc
-gtk_min_version = '3.0.0'
-cairo_min_version = '1.2.0'
+gtk_min_version = '3.22.0'
+gtk_min_version_symbol='GDK_VERSION_3_22'
+cairo_min_version = '1.15.0'
 x11_min_version = '1.6.5'
 
 # gvncpule
-libpulse_min_version = '10.0'
+libpulse_min_version = '11.0'
 
 # common
 gobject_introspection_min_version = '1.56.0'
 
-
+libm_dep = cc.find_library('m', required : true)
 gobject_dep = dependency('gobject-2.0', version: '>= ' + glib_min_version)
 gio_dep = dependency('gio-2.0', version: '>= ' + glib_min_version)
 gio_unix_dep = dependency('gio-unix-2.0', version: '>= ' + glib_min_version, required: false)
@@ -83,30 +113,38 @@ gcrypt_dep = dependency('libgcrypt', version: '>= ' + gcrypt_min_version)
 gnutls_dep = dependency('gnutls', version: '>= ' + gnutls_min_version)
 cairo_dep = dependency('cairo', version: '>= ' + cairo_min_version)
 x11_dep = dependency('x11', version: '>= ' + x11_min_version, required: false)
-libpulse_dep = dependency('libpulse-simple', version: '>= ' + libpulse_min_version, required: false)
+libpulse_dep = dependency('libpulse-simple', version: '>= ' + libpulse_min_version, required: get_option('pulseaudio'))
 if libpulse_dep.found()
   conf_data.set('HAVE_PULSEAUDIO', true)
 endif
 zlib_dep = dependency('zlib', version: '>= ' + zlib_min_version)
-libsasl_dep = dependency('libsasl2', version: '>= ' + libsasl_min_version, required: false)
+libsasl_dep = dependency('libsasl2', version: '>= ' + libsasl_min_version, required: get_option('sasl'))
 if libsasl_dep.found()
   conf_data.set('HAVE_SASL', true)
 endif
 
-subproject('keycodemapdb')
+gvnc_version_check_flags = [
+  '-DGLIB_VERSION_MIN_REQUIRED=@0@'.format(glib_min_version_symbol),
+  '-DGLIB_VERSION_MAX_ALLOWED=@0@'.format(glib_min_version_symbol),
+]
 
-keymapgen = files('subprojects/keycodemapdb/tools/keymap-gen')
-keymapcsv = files('subprojects/keycodemapdb/data/keymaps.csv')
+gtk_vnc_version_check_flags = gvnc_version_check_flags + [
+  '-DGDK_VERSION_MIN_REQUIRED=@0@'.format(gtk_min_version_symbol),
+  '-DGDK_VERSION_MAX_ALLOWED=@0@'.format(gtk_min_version_symbol),
+]
+
+keycodemapdb = subproject('keycodemapdb')
+
+keymapgen = find_program('keymap-gen')
+keymapcsv = keycodemapdb.get_variable('keymaps_csv')
 
 
 gnome = import('gnome')
 i18n = import('i18n')
 
 check_cflags = [
-  '-W',
   '-Waddress',
   '-Waggressive-loop-optimizations',
-  '-Wall',
   '-Warray-bounds',
   '-Wattributes',
   '-Wbuiltin-macro-redefined',
@@ -124,7 +162,6 @@ check_cflags = [
   '-Wempty-body',
   '-Wendif-labels',
   '-Wenum-compare',
-  '-Wextra',
   '-Wformat-contains-nul',
   '-Wformat-extra-args',
   '-Wformat-security',
@@ -211,8 +248,6 @@ check_cflags = [
   '-Wno-cast-function-type',
   '-Wjump-misses-init',
   '-Wframe-larger-than=40096',
-  '-O2',
-  '-Wp,-D_FORTIFY_SOURCE=2',
   '-fexceptions',
   '-fasynchronous-unwind-tables',
   '-fdiagnostics-show-option',
@@ -221,29 +256,31 @@ check_cflags = [
   '-Wno-suggest-attribute=pure',
   '-Wno-suggest-attribute=const',
 ]
-if host_machine.system() == 'linux'
-  check_cflags += [
-    '-fstack-protector-all',
-    '--param=ssp-buffer-size=4',
-  ]
-endif
 
-cflags = []
-foreach cflag: check_cflags
-  if cc.has_argument(cflag)
-    cflags += [cflag]
+warning_cflags = []
+warning_ldflags = []
+if get_option('warning_level') == '2'
+  foreach cflag: check_cflags
+    if cc.has_argument(cflag)
+      warning_cflags += [cflag]
+    endif
+  endforeach
+
+  if host_machine.system() in [ 'linux', 'freebsd', 'windows' ]
+    # we prefer -fstack-protector-strong but fallback to -fstack-protector-all
+    fstack_cflags = cc.first_supported_argument([
+      '-fstack-protector-strong',
+      '-fstack-protector-all',
+    ])
+    warning_cflags += fstack_cflags
+
+    # When building with mingw using -fstack-protector requires libssp library
+    # which is included by using -fstack-protector with linker.
+    if fstack_cflags.length() == 1 and host_machine.system() == 'windows'
+      warning_ldflags = fstack_cflags
+    endif
   endif
-endforeach
-
-werror_option = get_option('enable-werror')
-if werror_option
-  if cc.has_argument('-Werror')
-    cflags += ['-Werror']
-  endif
 endif
-
-
-add_project_arguments(cflags, language: 'c')
 
 gtk_vnc_prefix = get_option('prefix')
 gtk_vnc_bindir = join_paths(gtk_vnc_prefix, get_option('bindir'))
@@ -277,7 +314,20 @@ configure_file(
 top_incdir = include_directories('.')
 src_incdir = include_directories('src')
 
-with_vala = get_option('with-vala')
+gir = find_program('g-ir-scanner', required: get_option('introspection'))
+with_gir = gir.found()
+
+vala_opt = get_option('with-vala')
+with_vala = false
+if not vala_opt.disabled()
+  if not with_gir
+    if vala_opt.enabled()
+      error('Vala API requires GObject introspection (-Dintrospection=true)')
+    endif
+  else
+    with_vala = add_languages('vala', required: vala_opt)
+  endif
+endif
 
 subdir('src')
 subdir('tools')
@@ -293,27 +343,28 @@ pkgdata.set('VERSION', meson.project_version())
 pkgdata.set('GLIB_REQUIRED', glib_min_version)
 pkgdata.set('GTK_REQUIRED', gtk_min_version)
 
-configure_file(
-  input: 'gvnc-1.0.pc.in',
-  output: 'gvnc-1.0.pc',
-  configuration: pkgdata,
-  install_dir: gtk_vnc_pkgconfdir,
+pkg = import('pkgconfig')
+pkg.generate(
+  gvnc,
+  description: 'GObject for VNC client connections',
+  requires: [gobject_dep],
+  subdirs: 'gvnc-1.0',
 )
 
 if libpulse_dep.found()
-  configure_file(
-    input: 'gvncpulse-1.0.pc.in',
-    output: 'gvncpulse-1.0.pc',
-    configuration: pkgdata,
-    install_dir: gtk_vnc_pkgconfdir,
+  pkg.generate(
+    gvncpulse,
+    description: 'Pulse audio bridge for VNC client connections',
+    requires: [gvnc],
+    subdirs: 'gvncpulse-1.0',
   )
 endif
 
-configure_file(
-  input: 'gtk-vnc-2.0.pc.in',
-  output: 'gtk-vnc-2.0.pc',
-  configuration: pkgdata,
-  install_dir: gtk_vnc_pkgconfdir,
+pkg.generate(
+  gtk_vnc,
+  description: 'GTK widget for a VNC client',
+  requires: [gtk_dep, gvnc],
+  subdirs: 'gtk-vnc-2.0',
 )
 
 configure_file(

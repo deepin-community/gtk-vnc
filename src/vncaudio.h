@@ -56,11 +56,3 @@ void vnc_audio_playback_data(VncAudio *aud,
 G_END_DECLS
 
 #endif /* VNC_AUDIO_H */
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */
