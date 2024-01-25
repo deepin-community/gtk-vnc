@@ -1,13 +1,15 @@
 %{?mingw_package_header}
 
+%global verdir %(echo ${version} | cut -d. -f1,2)
+
 Name: mingw-gtk-vnc
 Version: @VERSION@
 Release: 1%{?dist}
 Summary: MinGW Windows port of VNC client GTK widget
 
 License: LGPLv2+
-Source: http://ftp.gnome.org/pub/GNOME/sources/gtk-vnc/0.5/gtk-vnc-%{version}.tar.xz
-URL: https://wiki.gnome.org/Projects/gtk-vnc
+Source: https://download.gnome.org/sources/gtk-vnc/%{verdir}/gtk-vnc-%{version}.tar.xz
+URL: https://gitlab.gnome.org/GNOME/gtk-vnc
 
 BuildArch: noarch
 
@@ -50,7 +52,7 @@ Summary: Command line VNC tools
 %package -n mingw32-gtk-vnc2
 Summary: A GTK3 widget for VNC clients
 Requires: pkgconfig
-Obsoletes: mingw32-gtk-vnc
+Obsoletes: mingw32-gtk-vnc < 1.0.0
 
 %description -n mingw32-gvnc
 gvnc is a GObject for managing a VNC connection. It provides all the
@@ -76,7 +78,7 @@ Summary: Command line VNC tools
 %package -n mingw64-gtk-vnc2
 Summary: A GTK3 widget for VNC clients
 Requires: pkgconfig
-Obsoletes: mingw64-gtk-vnc
+Obsoletes: mingw64-gtk-vnc < 1.0.0
 
 %description -n mingw64-gvnc
 gvnc is a GObject for managing a VNC connection. It provides all the
@@ -100,7 +102,7 @@ allowing it to be completely asynchronous while remaining single threaded.
 
 
 %build
-%mingw_meson
+%mingw_meson -Dintrospection=disabled
 %mingw_ninja
 
 

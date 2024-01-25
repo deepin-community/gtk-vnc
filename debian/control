@@ -4,17 +4,17 @@ Priority: optional
 Maintainer: Debian Libvirt Maintainers <pkg-libvirt-maintainers@lists.alioth.debian.org>
 Uploaders:
  Guido Günther <agx@sigxcpu.org>,
-Standards-Version: 4.4.0
+Standards-Version: 4.6.0
 Build-Depends:
- debhelper (>= 12),
+ debhelper-compat (= 13),
  dh-sequence-gir,
  gobject-introspection,
  intltool,
  libcairo2-dev,
  libffi-dev,
- libgcrypt20-dev (>= 1.5.0),
+ libgcrypt20-dev (>= 1.8.0),
  libgirepository1.0-dev,
- libglib2.0-dev (>= 2.42.0),
+ libglib2.0-dev (>= 2.56.0),
  libgnutls28-dev (>= 3.1.18),
  libgtk-3-dev,
  libpulse-dev,
@@ -57,9 +57,13 @@ Architecture: any
 Section: libdevel
 Depends:
  libcairo2-dev (>= 1.2.0),
- libglib2.0-dev,
+ libgcrypt20-dev (>= 1.8.0),
+ libgdk-pixbuf-2.0-dev (>= 2.36.0),
+ libglib2.0-dev (>= 2.56.0),
  libgnutls28-dev,
  libgvnc-1.0-0 (= ${binary:Version}),
+ libpulse-dev (>= 11.0),
+ libsasl2-dev (>= 2.1.27),
  ${misc:Depends},
 Replaces:
  libgtk-vnc-1.0-dev (<= 0.4.3-1),
@@ -124,7 +128,9 @@ Section: introspection
 Architecture: any
 Multi-Arch: same
 Provides:
- gir1.2-gvnc-1.0,
+ gir1.2-gvnc-1.0 (= ${binary:Version}),
+ gir1.2-gvncpulse-1.0 (= ${binary:Version}),
+ gir1.2-gtkvnc-2.0 (= ${binary:Version})
 Depends:
  ${gir:Depends},
  ${misc:Depends},

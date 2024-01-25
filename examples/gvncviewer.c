@@ -82,11 +82,13 @@
 
 
 static gchar **args = NULL;
+int opt_zoom = 100;
 static const GOptionEntry options [] =
     {
-        {
-            G_OPTION_REMAINING, '\0', 0, G_OPTION_ARG_STRING_ARRAY, &args,
-            NULL, "[hostname][:display]" },
+        { "zoom", 'z', 0, G_OPTION_ARG_INT, &opt_zoom,
+          "Zoom level of window, in percentage", "ZOOM" },
+        { G_OPTION_REMAINING, '\0', 0, G_OPTION_ARG_STRING_ARRAY, &args,
+          NULL, "[hostname][:display]" },
         { NULL, 0, 0, G_OPTION_ARG_NONE, NULL, NULL, 0 }
     };
 
@@ -109,9 +111,9 @@ GtkAccelGroup *accel_group;
 gboolean accel_enabled = TRUE;
 GValue accel_setting;
 GSList *accel_list;
+gboolean grabbed = FALSE;
 
-static void set_title(VncDisplay *vncdisplay, GtkWidget *window,
-                      gboolean grabbed)
+static void set_title(VncDisplay *vncdisplay, GtkWidget *window)
 {
     const gchar *name = vnc_display_get_name(VNC_DISPLAY(vncdisplay));
     VncGrabSequence *seq = vnc_display_get_grab_keys(vncdisplay);
@@ -219,12 +221,24 @@ static void vnc_key_ungrab(GtkWidget *vncdisplay G_GNUC_UNUSED, GtkWidget *windo
 
 static void vnc_mouse_grab(GtkWidget *vncdisplay, GtkWidget *window)
 {
-    set_title(VNC_DISPLAY(vncdisplay), window, TRUE);
+    grabbed = TRUE;
+    set_title(VNC_DISPLAY(vncdisplay), window);
 }
 
 static void vnc_mouse_ungrab(GtkWidget *vncdisplay, GtkWidget *window)
 {
-    set_title(VNC_DISPLAY(vncdisplay), window, FALSE);
+    grabbed = FALSE;
+    set_title(VNC_DISPLAY(vncdisplay), window);
+}
+
+static void vnc_power_control_init(GtkWidget *vncdisplay G_GNUC_UNUSED, GtkWidget *power)
+{
+    gtk_widget_set_sensitive(power, TRUE);
+}
+
+static void vnc_power_control_failed(GtkWidget *vncdisplay G_GNUC_UNUSED)
+{
+    g_printerr("Unable to perform power control request\n");
 }
 
 static int connected = 0;
@@ -244,7 +258,7 @@ static void vnc_error(GtkWidget *vncdisplay G_GNUC_UNUSED,
 static void vnc_initialized(GtkWidget *vncdisplay, GtkWidget *window)
 {
     printf("Connection initialized\n");
-    set_title(VNC_DISPLAY(vncdisplay), window, FALSE);
+    set_title(VNC_DISPLAY(vncdisplay), window);
     gtk_widget_show_all(window);
 
 #ifdef HAVE_PULSEAUDIO
@@ -271,6 +285,13 @@ static void vnc_desktop_resize(GtkWidget *vncdisplay G_GNUC_UNUSED,
                                int width, int height)
 {
     printf("Remote desktop size changed to %dx%d\n", width, height);
+}
+
+static void vnc_desktop_rename(GtkWidget *vncdisplay,
+                               const char *name G_GNUC_UNUSED,
+                               GtkWidget *window)
+{
+    set_title(VNC_DISPLAY(vncdisplay), window);
 }
 
 static void vnc_disconnected(GtkWidget *vncdisplay G_GNUC_UNUSED)
@@ -378,12 +399,61 @@ static void do_scaling(GtkWidget *menu, GtkWidget *vncdisplay)
         vnc_display_set_scaling(VNC_DISPLAY(vncdisplay), FALSE);
 }
 
+static void do_resize(GtkWidget *menu, GtkWidget *vncdisplay)
+{
+    if (gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(menu)))
+        vnc_display_set_allow_resize(VNC_DISPLAY(vncdisplay), TRUE);
+    else
+        vnc_display_set_allow_resize(VNC_DISPLAY(vncdisplay), FALSE);
+}
+
 static void do_smoothing(GtkWidget *menu, GtkWidget *vncdisplay)
 {
     if (gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(menu)))
         vnc_display_set_smoothing(VNC_DISPLAY(vncdisplay), TRUE);
     else
         vnc_display_set_smoothing(VNC_DISPLAY(vncdisplay), FALSE);
+}
+
+static void do_keep_aspect_ratio(GtkWidget *menu, GtkWidget *vncdisplay)
+{
+    if (gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(menu)))
+        vnc_display_set_keep_aspect_ratio(VNC_DISPLAY(vncdisplay), TRUE);
+    else
+        vnc_display_set_keep_aspect_ratio(VNC_DISPLAY(vncdisplay), FALSE);
+}
+
+static void do_rotate(GtkWidget *menu G_GNUC_UNUSED, GtkWidget *vncdisplay)
+{
+    guint rotation = vnc_display_get_rotation(VNC_DISPLAY(vncdisplay));
+    vnc_display_set_rotation(VNC_DISPLAY(vncdisplay), rotation + 90u);
+}
+
+
+static void do_power_control(VncDisplay *vncdisplay, VncConnectionPowerAction action)
+{
+    VncConnection *conn = vnc_display_get_connection(vncdisplay);
+
+    if (!vnc_connection_get_power_control(conn)) {
+        g_printerr("Power control not available on this server\n");
+        return;
+    }
+    vnc_connection_power_control(conn, action);
+}
+
+static void do_shutdown(GtkWidget *menu G_GNUC_UNUSED, GtkWidget *vncdisplay)
+{
+    do_power_control(VNC_DISPLAY(vncdisplay), VNC_CONNECTION_POWER_ACTION_SHUTDOWN);
+}
+
+static void do_reboot(GtkWidget *menu G_GNUC_UNUSED, GtkWidget *vncdisplay)
+{
+    do_power_control(VNC_DISPLAY(vncdisplay), VNC_CONNECTION_POWER_ACTION_REBOOT);
+}
+
+static void do_reset(GtkWidget *menu G_GNUC_UNUSED, GtkWidget *vncdisplay)
+{
+    do_power_control(VNC_DISPLAY(vncdisplay), VNC_CONNECTION_POWER_ACTION_RESET);
 }
 
 static void dialog_update_keysyms(GtkWidget *window, guint *keysyms, guint numsyms)
@@ -519,7 +589,7 @@ static void do_set_grab_keys(GtkWidget *menu G_GNUC_UNUSED, GtkWidget *window)
                                     defs->keysyms);
 
         vnc_display_set_grab_keys(VNC_DISPLAY(vnc), seq);
-        set_title(VNC_DISPLAY(vnc), window, FALSE);
+        set_title(VNC_DISPLAY(vnc), window);
         vnc_grab_sequence_free(seq);
     }
     g_free(defs);
@@ -641,7 +711,7 @@ int main(int argc, char **argv)
     GtkWidget *window;
     GtkWidget *layout;
     GtkWidget *menubar;
-    GtkWidget *sendkey, *view, *settings;
+    GtkWidget *sendkey, *view, *settings, *power;
     GtkWidget *submenu;
     GtkWidget *caf1;
     GtkWidget *caf2;
@@ -656,7 +726,13 @@ int main(int argc, char **argv)
     GtkWidget *fullscreen;
     GtkWidget *scaling;
     GtkWidget *smoothing;
+    GtkWidget *keep_aspect_ratio;
+    GtkWidget *resize;
+    GtkWidget *rotate;
     GtkWidget *showgrabkeydlg;
+    GtkWidget *shutdown;
+    GtkWidget *reboot;
+    GtkWidget *reset;
     const char *help_msg = "Run 'gvncviewer --help' to see a full list of available command line options";
     GSList *accels;
 
@@ -730,11 +806,20 @@ int main(int argc, char **argv)
     fullscreen = gtk_check_menu_item_new_with_mnemonic("_Full Screen");
     scaling = gtk_check_menu_item_new_with_mnemonic("Scaled display");
     smoothing = gtk_check_menu_item_new_with_mnemonic("Smooth scaling");
+    keep_aspect_ratio = gtk_check_menu_item_new_with_mnemonic("Keep aspect ratio");
+    resize = gtk_check_menu_item_new_with_mnemonic("Allow resizing");
+    rotate = gtk_menu_item_new_with_mnemonic("Rotate ↷");
+
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(scaling), TRUE);
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(smoothing), TRUE);
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(resize), TRUE);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(submenu), fullscreen);
     gtk_menu_shell_append(GTK_MENU_SHELL(submenu), scaling);
     gtk_menu_shell_append(GTK_MENU_SHELL(submenu), smoothing);
+    gtk_menu_shell_append(GTK_MENU_SHELL(submenu), keep_aspect_ratio);
+    gtk_menu_shell_append(GTK_MENU_SHELL(submenu), rotate);
+    gtk_menu_shell_append(GTK_MENU_SHELL(submenu), resize);
 
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(view), submenu);
 
@@ -747,6 +832,22 @@ int main(int argc, char **argv)
     gtk_menu_shell_append(GTK_MENU_SHELL(submenu), showgrabkeydlg);
 
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(settings), submenu);
+
+    power = gtk_menu_item_new_with_mnemonic("_Power");
+    gtk_widget_set_sensitive(power, FALSE);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), power);
+
+    submenu = gtk_menu_new();
+
+    shutdown = gtk_menu_item_new_with_mnemonic("_Shutdown");
+    reboot = gtk_menu_item_new_with_mnemonic("_Reboot");
+    reset = gtk_menu_item_new_with_mnemonic("Rese_t");
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(submenu), shutdown);
+    gtk_menu_shell_append(GTK_MENU_SHELL(submenu), reboot);
+    gtk_menu_shell_append(GTK_MENU_SHELL(submenu), reset);
+
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(power), submenu);
 
     gtk_box_pack_start(GTK_BOX(layout), menubar, FALSE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(layout), vnc, TRUE, TRUE, 0);
@@ -789,7 +890,7 @@ int main(int argc, char **argv)
         } else {
             port = g_strdup("5900");
         }
-        vnc_display_open_host(VNC_DISPLAY(vnc), hostname, port);
+        vnc_display_open_host(VNC_DISPLAY(vnc), *hostname ? hostname : "localhost", port);
         g_free(hostname);
         g_free(port);
 #ifdef HAVE_GIOUNIX
@@ -799,10 +900,11 @@ int main(int argc, char **argv)
     vnc_display_set_pointer_grab(VNC_DISPLAY(vnc), TRUE);
     vnc_display_set_pointer_local(VNC_DISPLAY(vnc), TRUE);
 
-    if (!gtk_widget_is_composited(window)) {
-        vnc_display_set_scaling(VNC_DISPLAY(vnc), TRUE);
-        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(scaling), TRUE);
-    }
+    vnc_display_set_scaling(VNC_DISPLAY(vnc), TRUE);
+    vnc_display_set_allow_resize(VNC_DISPLAY(vnc), TRUE);
+    vnc_display_set_rotation(VNC_DISPLAY(vnc), 0u);
+    vnc_display_set_lossy_encoding(VNC_DISPLAY(vnc), TRUE);
+    vnc_display_set_zoom_level(VNC_DISPLAY(vnc), opt_zoom);
 
     g_signal_connect(window, "delete-event",
                      G_CALLBACK(gtk_main_quit), NULL);
@@ -821,6 +923,8 @@ int main(int argc, char **argv)
 
     g_signal_connect(vnc, "vnc-desktop-resize",
                      G_CALLBACK(vnc_desktop_resize), NULL);
+    g_signal_connect(vnc, "vnc-desktop-rename",
+                     G_CALLBACK(vnc_desktop_rename), window);
 
     g_signal_connect(vnc, "vnc-pointer-grab",
                      G_CALLBACK(vnc_mouse_grab), window);
@@ -832,6 +936,10 @@ int main(int argc, char **argv)
     g_signal_connect(vnc, "vnc-keyboard-ungrab",
                      G_CALLBACK(vnc_key_ungrab), window);
 
+    g_signal_connect(vnc, "vnc-power-control-initialized",
+                     G_CALLBACK(vnc_power_control_init), power);
+    g_signal_connect(vnc, "vnc-power-control-failed",
+                     G_CALLBACK(vnc_power_control_failed), power);
 
     g_signal_connect(window, "key-press-event",
                      G_CALLBACK(vnc_screenshot), vnc);
@@ -864,16 +972,20 @@ int main(int argc, char **argv)
                      G_CALLBACK(do_scaling), vnc);
     g_signal_connect(smoothing, "toggled",
                      G_CALLBACK(do_smoothing), vnc);
+    g_signal_connect(keep_aspect_ratio, "toggled",
+                     G_CALLBACK(do_keep_aspect_ratio), vnc);
+    g_signal_connect(rotate, "activate",
+                     G_CALLBACK(do_rotate), vnc);
+    g_signal_connect(shutdown, "activate",
+                     G_CALLBACK(do_shutdown), vnc);
+    g_signal_connect(reboot, "activate",
+                     G_CALLBACK(do_reboot), vnc);
+    g_signal_connect(reset, "activate",
+                     G_CALLBACK(do_reset), vnc);
+    g_signal_connect(resize, "toggled",
+                     G_CALLBACK(do_resize), vnc);
 
     gtk_main();
 
     return 0;
 }
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

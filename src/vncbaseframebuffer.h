@@ -76,11 +76,3 @@ VncBaseFramebuffer *vnc_base_framebuffer_new(guint8 *buffer,
 G_END_DECLS
 
 #endif /* VNC_BASE_FRAMEBUFFER_H */
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

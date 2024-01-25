@@ -54,42 +54,25 @@
 #include "vncdisplaykeymap_xorgxquartz2qnum.h"
 /* Xorg Cygwin aka XWin (offset + mangled XT keycodes) */
 #include "vncdisplaykeymap_xorgxwin2qnum.h"
-
-/* Gtk2 compat */
-#ifndef GDK_IS_X11_DISPLAY
-#define GDK_IS_X11_DISPLAY(dpy) (dpy != NULL)
-#endif
 #endif
 
 #ifdef GDK_WINDOWING_WIN32
+#include <gdk/gdkwin32.h>
 /* Win32 native virtual keycodes */
 #include "vncdisplaykeymap_win322qnum.h"
-
-/* Gtk2 compat */
-#ifndef GDK_IS_WIN32_DISPLAY
-#define GDK_IS_WIN32_DISPLAY(dpy) (dpy != NULL)
-#endif
 #endif
 
 #ifdef GDK_WINDOWING_BROADWAY
 /* X11 keysyms */
+#include <gdk/gdkbroadway.h>
 #include "vncdisplaykeymap_x112qnum.h"
-
-/* Gtk2 compat */
-#ifndef GDK_IS_BROADWAY_DISPLAY
-#define GDK_IS_BROADWAY_DISPLAY(dpy) (dpy != NULL)
-#endif
 
 #endif
 
 #ifdef GDK_WINDOWING_QUARTZ
 /* OS-X native keycodes */
+#include <gdk/gdkquartz.h>
 #include "vncdisplaykeymap_osx2qnum.h"
-
-/* Gtk2 compat */
-#ifndef GDK_IS_QUARTZ_DISPLAY
-#define GDK_IS_QUARTZ_DISPLAY(dpy) (dpy != NULL)
-#endif
 #endif
 
 #ifdef GDK_WINDOWING_X11
@@ -253,11 +236,3 @@ guint16 vnc_display_keymap_gdk2rfb(const guint16 *keycode_map,
         return 0;
     return keycode_map[keycode];
 }
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

@@ -26,9 +26,6 @@
 #include "vncutil.h"
 #include "coroutine.h"
 
-#define VNC_BASE_AUDIO_GET_PRIVATE(obj)                                 \
-    (G_TYPE_INSTANCE_GET_PRIVATE((obj), VNC_TYPE_BASE_AUDIO, VncBaseAudioPrivate))
-
 struct _VncBaseAudioPrivate {
     gboolean unused;
 };
@@ -38,7 +35,8 @@ static void vnc_base_audio_interface_init(gpointer g_iface,
                                           gpointer iface_data);
 
 G_DEFINE_TYPE_EXTENDED(VncBaseAudio, vnc_base_audio, G_TYPE_OBJECT, 0,
-                       G_IMPLEMENT_INTERFACE(VNC_TYPE_AUDIO, vnc_base_audio_interface_init));
+                       G_IMPLEMENT_INTERFACE(VNC_TYPE_AUDIO, vnc_base_audio_interface_init)
+                       G_ADD_PRIVATE(VncBaseAudio));
 
 
 static void vnc_base_audio_class_init(VncBaseAudioClass *klass)
@@ -73,18 +71,14 @@ static void vnc_base_audio_class_init(VncBaseAudioClass *klass)
                  G_TYPE_NONE,
                  1,
                  VNC_TYPE_AUDIO_SAMPLE);
-
-    g_type_class_add_private(klass, sizeof(VncBaseAudioPrivate));
 }
 
 
-void vnc_base_audio_init(VncBaseAudio *fb)
+void vnc_base_audio_init(VncBaseAudio *audio)
 {
-    VncBaseAudioPrivate *priv;
+    VncBaseAudioPrivate *priv = vnc_base_audio_get_instance_private(audio);
 
-    priv = fb->priv = VNC_BASE_AUDIO_GET_PRIVATE(fb);
-
-    memset(priv, 0, sizeof(*priv));
+    audio->priv = priv;
 }
 
 
@@ -133,11 +127,3 @@ static void vnc_base_audio_interface_init(gpointer g_iface,
     iface->playback_stop = vnc_base_audio_playback_stop;
     iface->playback_data = vnc_base_audio_playback_data;
 }
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

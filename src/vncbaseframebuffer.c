@@ -44,9 +44,6 @@ typedef void vnc_base_framebuffer_rgb24_blt_func(VncBaseFramebufferPrivate *priv
                                                  guint16 width, guint16 height);
 
 
-#define VNC_BASE_FRAMEBUFFER_GET_PRIVATE(obj)                           \
-    (G_TYPE_INSTANCE_GET_PRIVATE((obj), VNC_TYPE_BASE_FRAMEBUFFER, VncBaseFramebufferPrivate))
-
 struct _VncBaseFramebufferPrivate {
     guint8 *buffer; /* Owned by caller, so no need to free */
     guint16 width;
@@ -85,7 +82,8 @@ static void vnc_base_framebuffer_interface_init (gpointer g_iface,
                                                  gpointer iface_data);
 
 G_DEFINE_TYPE_EXTENDED(VncBaseFramebuffer, vnc_base_framebuffer, G_TYPE_OBJECT, 0,
-                       G_IMPLEMENT_INTERFACE(VNC_TYPE_FRAMEBUFFER, vnc_base_framebuffer_interface_init));
+                       G_IMPLEMENT_INTERFACE(VNC_TYPE_FRAMEBUFFER, vnc_base_framebuffer_interface_init)
+                       G_ADD_PRIVATE(VncBaseFramebuffer));
 
 
 enum {
@@ -312,16 +310,14 @@ static void vnc_base_framebuffer_class_init(VncBaseFramebufferClass *klass)
                                                        G_PARAM_STATIC_NAME |
                                                        G_PARAM_STATIC_NICK |
                                                        G_PARAM_STATIC_BLURB));
-
-    g_type_class_add_private(klass, sizeof(VncBaseFramebufferPrivate));
 }
 
 
 void vnc_base_framebuffer_init(VncBaseFramebuffer *fb)
 {
-    VncBaseFramebufferPrivate *priv;
+    VncBaseFramebufferPrivate *priv = vnc_base_framebuffer_get_instance_private(fb);
 
-    priv = fb->priv = VNC_BASE_FRAMEBUFFER_GET_PRIVATE(fb);
+    fb->priv = priv;
 
     memset(priv, 0, sizeof(*priv));
     priv->reinitRenderFuncs = TRUE;
@@ -894,7 +890,7 @@ static void vnc_base_framebuffer_reinit_render_funcs(VncBaseFramebuffer *fb)
     else
         priv->blt = vnc_base_framebuffer_blt_table[i - 1][j - 1];
 
-    priv->rgb24_blt = vnc_base_framebuffer_rgb24_blt_table[i - 1];
+    priv->rgb24_blt = vnc_base_framebuffer_rgb24_blt_table[j - 1];
 
     priv->reinitRenderFuncs = FALSE;
 }
@@ -1021,11 +1017,3 @@ static void vnc_base_framebuffer_interface_init(gpointer g_iface,
     iface->rgb24_blt = vnc_base_framebuffer_rgb24_blt;
     iface->set_color_map = vnc_base_framebuffer_set_color_map;
 }
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

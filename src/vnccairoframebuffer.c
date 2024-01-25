@@ -27,15 +27,12 @@
 #include "vnccairoframebuffer.h"
 #include "vncutil.h"
 
-#define VNC_CAIRO_FRAMEBUFFER_GET_PRIVATE(obj)                          \
-    (G_TYPE_INSTANCE_GET_PRIVATE((obj), VNC_TYPE_CAIRO_FRAMEBUFFER, VncCairoFramebufferPrivate))
-
 struct _VncCairoFramebufferPrivate {
     cairo_surface_t *surface;
 };
 
 
-G_DEFINE_TYPE(VncCairoFramebuffer, vnc_cairo_framebuffer, VNC_TYPE_BASE_FRAMEBUFFER);
+G_DEFINE_TYPE_WITH_PRIVATE(VncCairoFramebuffer, vnc_cairo_framebuffer, VNC_TYPE_BASE_FRAMEBUFFER);
 
 
 enum {
@@ -110,18 +107,14 @@ static void vnc_cairo_framebuffer_class_init(VncCairoFramebufferClass *klass)
                                                          G_PARAM_STATIC_NAME |
                                                          G_PARAM_STATIC_NICK |
                                                          G_PARAM_STATIC_BLURB));
-
-    g_type_class_add_private(klass, sizeof(VncCairoFramebufferPrivate));
 }
 
 
 void vnc_cairo_framebuffer_init(VncCairoFramebuffer *fb)
 {
-    VncCairoFramebufferPrivate *priv;
+    VncCairoFramebufferPrivate *priv = vnc_cairo_framebuffer_get_instance_private(fb);
 
-    priv = fb->priv = VNC_CAIRO_FRAMEBUFFER_GET_PRIVATE(fb);
-
-    memset(priv, 0, sizeof(*priv));
+    fb->priv = priv;
 }
 
 
@@ -187,12 +180,3 @@ cairo_surface_t *vnc_cairo_framebuffer_get_surface(VncCairoFramebuffer *fb)
 
     return priv->surface;
 }
-
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

@@ -88,11 +88,3 @@ void vnc_audio_format_free(VncAudioFormat *format)
 {
     g_slice_free(VncAudioFormat, format);
 }
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

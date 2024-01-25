@@ -73,11 +73,3 @@ cairo_surface_t *vnc_cairo_framebuffer_get_surface(VncCairoFramebuffer *fb);
 G_END_DECLS
 
 #endif /* VNC_CAIRO_FRAMEBUFFER_H */
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

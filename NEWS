@@ -1,6 +1,61 @@
     GTK VNC News
     ============
 
+Jul 14, 2022: Release 1.3.1
+===========================
+
+ o Fix invalid use of subprojects with meson
+ o Support ZRLE encoding for zero size alpha cursors
+ o Add 'check' arg to meson run_command()
+
+Nov 16, 2021: Release 1.3.0
+===========================
+
+ o Add API to request screen rotation
+ o Automatically pick gthread coroutine if ucontext is not available
+ o Fix meson logic bug when disabling vala
+ o Honour choice of python when generating keymaps
+ o Fix error reporting and memory leaks encrypting auth data
+ o Fix missing includes for GDK quartz and broadway backends
+ o Switch to GNUTLS for VNC auth challenge to fix empty password handling
+ o Fix handling of auth subtypes in gvnccapture program
+
+Apr 14, 2021: Release 1.2.0
+===========================
+
+ o Add API to request fixed zoom level
+ o Add API to request fixed aspect ratio when scaling
+ o Add APIs for client initiated desktop resize
+ o Implement "Extended Desktop Resize" VNC extension
+ o Implement "Desktop Rename" VNC extension
+ o Implement "Last Rect" VNC extension
+ o Implement "XVP" (power control) VNC extension
+ o Implement VeNCrypt "plain" auth mode
+ o Implement alpha cursor VNC extension
+ o Use GTK preferred width/height helpers for resizing
+ o Fix misc docs/introspection annotation bugs
+ o Honour meson warninglevel setting for compiler flags
+ o Fix JPEG decoding in low colour depth modes
+ o Fix minor memory leaks
+ o Add header file macros for checking API version
+ o Change some meson options from "bool" to "feature"
+ o Validate GLib/GTK min/max symbol versions at build time
+ o Avoid recreating framebuffer if size/format is unchanged
+ o Emit resize signal after WMVi update
+ o Various fixes & enhancements to python demo program
+ o Ensure Gir files build against local libs
+ o Enable stack protector on more platforms
+ o Don't force disable introspection on windows
+ o Relax min x11 deps for older platforms
+ o Avoid mutex deadlock on FreeBSD in test suite
+ o Stop using deprecated GLib thread APIs
+ o Stop using deprecated GLib main loop APIs
+ o Stop using deprecated GObject class private data APIs
+ o Add fixes for building on macOS
+ o Fix deps for building example program
+ o Update translations
+
+
 Aug 7, 2019: Release 1.0.0
 ==========================
 

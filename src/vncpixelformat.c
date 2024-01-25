@@ -88,10 +88,17 @@ void vnc_pixel_format_free(VncPixelFormat *format)
     g_slice_free(VncPixelFormat, format);
 }
 
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */
+gboolean vnc_pixel_format_match(const VncPixelFormat *format,
+                                const VncPixelFormat *other)
+{
+    return format->bits_per_pixel == other->bits_per_pixel &&
+        format->depth == other->depth &&
+        format->byte_order == other->byte_order &&
+        format->true_color_flag == other->true_color_flag &&
+        format->red_max == other->red_max &&
+        format->green_max == other->green_max &&
+        format->blue_max == other->blue_max &&
+        format->red_shift == other->red_shift &&
+        format->green_shift == other->green_shift &&
+        format->blue_shift == other->blue_shift;
+}

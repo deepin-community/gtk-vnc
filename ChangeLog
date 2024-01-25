@@ -1,3 +1,591 @@
+2022-07-14  Daniel P. Berrangé  <berrange@redhat.com>
+
+	Bump version to 1.3.1 and add release notes
+
+	Add 'check' arg to meson run_command()
+
+2022-07-07  Zurab Kargareteli  <zuraxt@gmail.com>
+
+	Add Georgian translation
+
+2022-06-27  Eli Schwartz  <eschwartz93@gmail.com>
+
+	fix invalid use of subprojects
+	The keycodemapdb Meson subproject provides a program and a source input.
+	Since it is a subproject, Meson wants to sandbox that and requires it to
+	be explicitly exported. But this never happened -- instead, we manually
+	poked at files using the actual string path "subprojects/......"
+
+	This was always a Meson sandbox violation, but Meson 0.63.0 started
+	noticing it and erroring out.
+
+	Instead, do the right thing. Update the subproject to a version that has
+	a meson.build with actually meaningful contents -- namely, a files
+	variable and a found program. Then use these in order to run the needed
+	custom_target.
+
+	In the process, it is also necessary to correct the argument ordering
+	when running keymap-gen.
+
+2022-02-23  Johannes Maibaum  <jmaibaum@gmail.com>
+
+	Handle ZRLE encoding of zero size alpha cursor
+
+2021-11-17  Daniel P. Berrangé  <berrange@redhat.com>
+
+	Bump version to 1.3.0 and add release notes
+
+	The vala-tools package was dropped long ago
+	It has only existed as a virtual Provides line since Fedora 25
+
+2021-11-15  Daniel P. Berrangé  <berrange@redhat.com>
+
+	Remove bogus newlines from VNC_DEBUG calls
+	This macro is a wrappar around g_debug and as such doesn't need to add
+	its own newline, unless trying to break a single message across lines.
+
+2021-11-12  Daniel P. Berrangé  <berrange@redhat.com>
+
+	tools: fix gvnccapture handling of subauth types
+
+	src: rewrite challenge code to use gnutls
+	gcrypt refuses to encrypt DES data using an all-zeros key. While this
+	might seem reasonable, this is the key that you get when someone sets
+	a zero length password in a VNC server.
+
+	IOW, the gcrypt behaviour prevents gtk-vnc connecting to a server with
+	zero length password.
+
+	GNUTLS doesn't have this problem but also doesn't support DES-ECB,
+	so we have to fake it by calling DES-CBC for each block individually.
+	Conceptually this is horribly inefficient, but since the VNC challenge
+	is only 16 bytes long it isn't a problem in the real world.
+
+	src: pull challenge encryption out into separate helper method
+
+2021-05-27  Daniel P. Berrangé  <berrange@redhat.com>
+
+	fix missing includes for quartz and broadway GDK backends
+	This is another case of the bug fixed in
+
+	commit d2c93a2bc0a9caa73bbebb41333fa7930d4165ab
+	Author: Daniel P. Berrangé <dan@berrange.com>
+	Date:   Tue Mar 30 15:00:00 2021 +0100
+
+	    Add missing include of gdkwin32.h
+
+	Closes: https://gitlab.gnome.org/GNOME/gtk-vnc/-/issues/16
+
+	Remove unused variables
+
+2021-05-27  Thomas Loimer  <thomas.loimer@tuwien.ac.at>
+
+	Add a button to rotate the screen
+	On each click on the new menu item, the screen is rotated by additional
+	90 degrees clockwise.
+
+2021-05-27  Jakub Janků  <jjanku@redhat.com>
+
+	ard: set connection error
+	As with vncEncryptBytes2 in the earlier patch,
+	the connection error must be set, otherwise the connection
+	stays in the mainloop, but nothing is happening.
+
+	ard: cleanup properly
+	With the current code, if one of the gcry functions in
+	vnc_connection_perform_auth_ard() fails:
+	* key isn't released
+	* md5 isn't closed
+	* mpis and dh aren't released
+
+	vncEncryptBytes2: set connection error and cleanup
+	If vncEncryptBytes2 fails, the false return value propagates
+	upwards, but no error is set. The connection ends up stuck in
+	the mainloop with nothing happening.
+
+	Additionally, the mpis and dh aren't freed.
+
+	To fix that, return the gcry error from vncEncryptBytes2
+	and set the connection error accordingly.
+
+	vnc-auth: emit "vnc-auth-failure" for weak key
+	In vnc_connection_perform_auth_vnc(), if the user enters an empty
+	password, gcry_cipher_setkey() fails with GPG_ERR_WEAK_KEY.
+
+	In such case, we want to give the useranother chance to reenter
+	the password, as is the case when the password is incorrect.
+
+	To enable that, the auth-failure signal needs to be emitted.
+
+	Fixes: https://bugzilla.redhat.com/show_bug.cgi?id=1941398
+
+2021-05-07  Mart Raudsepp  <leio@gentoo.org>
+
+	meson: Find python explicitly to honor downstream python choice
+
+2021-04-28  Matt Turner  <mattst88@gmail.com>
+
+	meson: Fix configuration failure with -Dwith-vala=disabled
+	Otherwise with_vala is not defined, and meson setup results in
+
+	    src/meson.build:169:5: ERROR: Unknown variable "with_vala".
+
+2021-04-26  Jakub Janků  <jjanku@redhat.com>
+
+	build: improve --with-coroutine=auto choice
+	When the required ucontext functions aren't found, switch to gthread
+	coroutines instead of failing during the build.
+
+	These functions are absent from the POSIX.1-2008.
+
+	Fixes: https://gitlab.gnome.org/GNOME/gtk-vnc/-/issues/11
+
+2021-04-14  Daniel P. Berrangé  <berrange@redhat.com>
+
+	meson: bump release to 1.2.0
+
+	Fill in NEWS for 1.2.0 release
+
+	meson: only run syntax-check if runnin from git
+	The syntax-check rules use git to get a list of files to check.
+
+2021-04-07  Daniel P. Berrangé  <berrange@redhat.com>
+
+	src: add support for zoom level
+	This allows the remote desktop be to kept at a fixed scaling
+	factor between 10% and 400%.
+
+	src: fix incorrect method names in API docs and inconsistent param names
+
+	src: implement preferred width/height helpers
+	This is the more modern approach to layout sizing in GTK, compared to
+	setting an explicit size request. The main benefit is that we can
+	force a resize to match the remote desktop size, while still allowing
+	the user to resize the window smaller. This is useful when either
+	scaling, or client initiated framebuffer resizes are enabled.
+
+	examples: default hostname to "localhost" if not specified
+
+2021-04-06  Marc-André Lureau  <marcandre.lureau@redhat.com>
+
+	connection: annotate vnc-cursor-changed can be NULL
+
+	connection: use boxed type for pixel-format-changed
+
+	connection: simplify sharedFlag argument name
+	Lower_case is the prefered glib C style.
+
+	misc: spelling in doc
+
+	colormap: fix GI annotation for lookup
+
+	connection: document VncConnectionAuth
+	GEnum works with values that fit in int. However 0xffffffa doesn't fit,
+	it is actually -6. We can't change the assigned value as this would
+	likely change the representation of the enum back to int and may break ABI.
+
+2021-04-01  Daniel P. Berrangé  <berrange@redhat.com>
+
+	rpm: ensure Obsoletes rules are versioned
+	Obsoletes are recommended to include the max version that is intended to
+	be erased, to allow the package to be reintroduced more easily at a
+	later date if required.
+
+	build: simplify release prep script to reduce number of builds
+
+	rpm: update URLs for home page and download
+
+	rpm: remove obsolete ldconfig scriptlets
+
+	rpm: cull conditionals related to RHEL-7
+
+	po: refresh po files with latest content
+
+	meson: set cflags directly on targets
+	Setting the cflags globally causes them to be picked up by g-ir-scanner
+	which is not desired.
+
+	meson: only set extra warning flags when warninglevel==2
+	This makes us respect the meson warning level and avoids warnings from
+	meson about reinventing its warninglevel feature.
+
+	meson: set _FORTIFY_SOURCE in config.h
+	Avoiding setting it in meson.build means we can honour the optimization
+	level defined by meson.
+
+	Revert "src: unset size request if scaling is active"
+	This (mostly) reverts commit 0b0afcad76d208d8c371706123a731e215bff710.
+
+	Widget resize requests are handled asynchronously, so when the
+	idle func runs, we may not have actually done the resize yet.
+	This resulted in the window not honouring the desktop resize
+	notifications at all times.
+
+	The do_size_request() call in vnc_display_set_scaling was
+	a separate bug fix that must be kept.
+
+	examples: enable lossy encodings in demo program
+
+	src: add logging of encodings that are sent
+
+	src: add debugging when setting pixel format
+
+	src: fix pixel shifts in rgb24_blt functions
+	The src pixel is always rgb24 format, regardless of what the
+	remote pixel format is, so we should not be using the remote
+	pixel shifts.
+
+	Fixes https://gitlab.gnome.org/GNOME/gtk-vnc/-/issues/14
+
+	src: fix inverted rgb24_blt function lookup
+	We we picking the rgb24_blt function based on the remote
+	pixel format, rather than the local pixel format. This
+	caused the pixel data to be horizontally compressed in
+	low color depth modes.
+
+	Fixes https://gitlab.gnome.org/GNOME/gtk-vnc/-/issues/14
+
+2021-03-31  Daniel P. Berrangé  <berrange@redhat.com>
+
+	src: fix remote pixel format when reading alpha cursor
+	The remote pixel format for alpha cursor is always RGB888
+	true colour, regardless of the framebuffer pixel format.
+
+	src: remove overly verbose debug logging
+	This avoids printing debug messages on every mouse event
+
+2021-03-30  Daniel P. Berrangé  <berrange@redhat.com>
+
+	Add missing include of gdkwin32.h
+	This is needed for GDK_IS_WIN32_DISPLAY. This bug was masked until
+
+	  commit 78225889ce861c0d3ea4aa97603fef252817505f
+	  Author: Marc-André Lureau <marcandre.lureau@gmail.com>
+	  Date:   Wed Mar 24 12:45:27 2021 +0400
+
+	    Cleanup Gtk2 leftovers
+
+	src: clear resize event source ID after cancelling
+	If we don't clear it then we'll later try to remove the source a second,
+	third, fourth time which isn't desirable.
+
+	examples: add menu option for keep aspect ratio
+
+	examples: always enable scaling and resizing
+	These are both features that are generally expected to be used.
+
+	Also protecting the use of scaling behind an is_composited
+	check is wrong on Wayland. Any modern platform can cope with
+	scaling these days.
+
+	src: add option to keep aspect ratio when scaling the display
+	Currently applications like virt-viewer will apply their own workaround
+	to keep the aspect ratio by fixing the widget size. Since applications
+	want this behaviour, we should support it directly.
+
+	src: introduce helper for calculating scaling/offset info
+	Currently the widget either scales the rendering, or offsets it.
+	In the future it needs to be able to do both. There are multiple
+	methods which need to know this info, so introduce a helper to
+	calculate it.
+
+	src: fix mem leaks in SASL, rich cursor and xcursor code
+
+2021-03-24  Marc-André Lureau  <marcandre.lureau@redhat.com>
+
+	meson: use pkgconfig module to generate pc files
+
+	Cleanup Gtk2 leftovers
+
+2021-03-17  Jakub Janků  <jjanku@redhat.com>
+
+	connection: fix format string for auth failure
+	This error is visible when entering an empty password and results
+	into an error message like this:
+
+	"Unknown authentication failure: %s: Weak encryption key"
+
+2021-03-11  Daniel P. Berrangé  <berrange@redhat.com>
+
+	src: avoid sending a resize with dimensions -1, -1
+	When we receive a desktop resize request, we blank out the last resize
+	data, but we failed to cancel the timer. This results in us later
+	sending a resize for -1, -1, which is interpreted as 65535, 65535
+	and then clamped to the max possible framebuffer size by the server.
+
+2021-03-10  Daniel P. Berrangé  <berrange@redhat.com>
+
+	src: ensure vncversion.h includes glib.h
+
+	src: ensure vncversion.h is installed
+
+2021-03-09  Daniel P. Berrangé  <berrange@redhat.com>
+
+	src: introduce a vncversion.h header file
+	This header can be used by apps which want to conditionally use newer
+	functionality at build time.
+
+	src: remove emacs indent variables from all source files
+	The top level .dir-locals.el file can achieve the same end goal.
+
+2021-01-08  Daniel P. Berrangé  <berrange@redhat.com>
+
+	examples: add menu option to enable desktop resizing
+
+	src: implement dynamic resize of remote desktop on widget resize
+	This wires up the widget to send remote desktop resize requests to
+	the server when the widget changes size. Resize requests will be
+	delayed for 500ms each time a resize is seen, so that when the user
+	is resizing the windows we only send a request once they've stopped
+	instead of for the 100's of intermediate sizes.
+
+	src: add APIs to control whether desktop resizing is allowed
+	If desktop resizing is allowed, it will take priority over scaling when
+	the server supports it.
+
+	src: add API for requesting a desktop resize
+
+	src: block non-incremental updates after extended desktop resize
+	A compliant server must send a extended desktop resize framebuffer
+	update after receiving an update reqest with incremental==0. This will
+	trigger an infinite loop if the client responds to a desktop resize
+	with incremental==0.
+
+	Block the next framebuffer update request from using incremental==0
+	if it immediately follows a extended desktop resize.
+
+	src: add minimal support for extended desktop resize
+	This processes extended desktop resize frame buffer updates in the
+	same way as the traditional desktop resize updates.
+
+	build: disable introspection in mingw builds
+
+	build: change with-vala and introspection options into features
+	Using "feature" type lets us automatically disable them when appropriate
+
+	build: enable glib/gtk API version usage checking
+
+2021-01-07  Daniel P. Berrangé  <berrange@redhat.com>
+
+	build: bump min versions of dependancies to RHEL8 vintage
+
+	src: remove use of obsolete thread APIs
+	Threading is always initialized from glib 2.32 onwards
+
+2021-01-04  Daniel P. Berrangé  <berrange@redhat.com>
+
+	meson: fix undefined variables for syms files on non-Linux builds
+	Even though we don't pass the linker args to use the sym files on
+	non-Linux, we still reference the syms files as dependencies.
+
+2020-12-11  Daniel P. Berrangé  <berrange@redhat.com>
+
+	src: unset size request if scaling is active
+	If scaling is active at the same time as force size, we want to set the
+	new size request, and then unset to let the user continue to resize.
+
+	src: reset widget size request when changing force-resize prop
+	Currently once force-resize is turned on, we never unset the widget size
+	request if it is turned back off.
+
+	src: optimize to avoid recreating framebuffer if size/format is unchanged
+	The QEMU VNC server will send a desktop size rectangle immediately
+	following any vmware desktop size change rectangle. This is redundant as
+	the latter already reports the size change. This leads to the display
+	needlessly re-creating the framebuffer despite nothing having changed.
+
+	src: fix handling of WMVi updates
+	The WMVi update encodes a new pixel format and desktop size in one
+	request. Clients should not assume that a separate desktop size message
+	will arrive, although QEMU does send one.  IOW, the desktop resize
+	signal must be emitted in response to a WMVi update too.
+
+	src: ensure libraries are rebuilt when syms file changes
+
+	examples: wire up to handle desktop renames
+
+	examples: wire up a menu for power control options
+
+	src: add support for desktop rename
+	Desktop rename allows the remote server to change the name associated
+	with a desktop.
+
+	src: add support for "last rect" encoding type
+	The last rect encoding allows servers to be more efficient by sending
+	rectangles before knowing how many there will be in total.
+
+	src: add support for VNC power control actions
+	This allows a client to request shutdown/reboot/reset of remote virtual
+	machines when appropriate.
+
+	Add support for VeNCrypt "plain" auth mode
+	The "plain" auth mode sends a username and password "as is" to the
+	server. This mode is only sensible to use if combined with TLS
+	session encryption, or if the channel is otherwise immune from
+	MITM attacks, such as a UNIX domain socket.
+
+	src: correctly handle zero size alpha cursor
+	Even with a zero size cursor we still have to read the encoding type off
+	the wire. Assuming we get a raw encoding, we don't have any further data
+	to read.
+
+	src: dont emit framebuffer refresh signals for alpha cursor
+
+2020-12-10  Daniel P. Berrangé  <berrange@redhat.com>
+
+	src: enable the alpha cursor encoding preferrentially
+	The alpha cursor provides better quality than the older x-cursor or
+	rich cursor extensions.
+
+	src: add support for alpha cursor encoding
+	The alpha cursor encoding sends the cursor in RGBA format.
+
+2020-12-08  Daniel P. Berrangé  <berrange@redhat.com>
+
+	src: check connections errors earlier when processing cursor changes
+
+	src: pass the framebuffer object into update handlers
+	We can't assume there will be only one framebuffer going forward, so
+	need to pass around an instance explicitly.
+
+	src: use framebuffer dimensions for validating framebuffer updates
+	The framebuffer size would match the remote desktop size at all times so
+	there is no functional change here. This will be useful, however, when
+	the update code is reused for decoding data unrelated to the primary
+	desktop.
+
+2020-12-08  Dr. Matthias St. Pierre  <matthias.st.pierre@ncp-e.com>
+
+	gvncviewer.py: suppress noisy output
+	Don't print anything to stdout unless the `--verbose (-v)`
+	option is provided.
+
+	gvncviewer.py: fix the screenshot feature
+	It seems like GdkPixbuf.Pixbuf.save() was replaced by GdkPixbuf.Pixbuf.savev(),
+	which yields the following error:
+
+	  Traceback (most recent call last):
+	    File ".../gtk-vnc/examples/gvncviewer.py", line 64, in vnc_screenshot
+	      pix.save("gvncviewer.png", "png", { "tEXt::Generator App": "gvncviewer.py" })
+	  AttributeError: 'Pixbuf' object has no attribute 'save'
+
+	gvncviewer.py add menu items for sending Ctrl+Alt+F2 and  Ctrl+Alt+F3
+	You can never have enough console windows ;-)
+
+	gvncviewer.py: add window close handler to terminate the program
+	This fixes the issue that the program hangs when the window is
+	closed using the 'X' button.
+
+	gvncviewer.py: add a '-h' and '--help' switch
+	Also postpone the time consuming loading of the Gtk libraries until
+	the sys.argv has been checked.
+
+	gvncviewer.py: add support for UNIX domain sockets
+	In addition to specifying a <host> name (and optional <display> number)
+
+	    gvncviewer.py <host>[:<display>] [password]
+
+	it is now also possible to specify the <path> of a UNIX domain socket:
+
+	    gvncviewer.py unix:<path> [password]
+
+	The syntax is inspired by QEMU's `-vnc unix:<path>` argument.
+
+	gvncviewer.py: fix TypeError in GtkVnc.Display.send_keys()
+	GtkVnc.Display.send_keys() now expects X11 key value constants
+	instead of strings, which resulted in a TypeError:
+
+	  Traceback (most recent call last):
+	    File ".../gtk-vnc/examples/gvncviewer.py", line 93, in send_caf1
+	      vnc.send_keys(["Control_L", "Alt_L", "F1"])
+	  TypeError: Item 0: Must be number, not str
+
+	gvncviewer.py: Fix PyGTKDeprecationWarning in Gtk.MenuItem()
+	Calling Gtk.MenuItem() with a string argument yields the following
+	deprecation warning:
+
+	  PyGTKDeprecationWarning: Using positional arguments with the
+	  GObject constructor has been deprecated. Please specify
+	  keyword(s) for "label" or use a class specific constructor.
+	  See: https://wiki.gnome.org/PyGObject/InitializerDeprecations
+
+	As recommended, use Gtk.MenuItem.new_with_mnemonic() instead.
+
+	gvncviewer.py: fix python3 errors
+	The only change necessary was to convert the print statements
+	to functions and add a __future__ for python2 compatibility.
+
+2020-08-28  Daniel P. Berrangé  <berrange@redhat.com>
+
+	Ensure GtkVnc / GVncPulse Gir files are built against local GVnc Git
+
+2020-08-19  Daniel P. Berrangé  <berrange@redhat.com>
+
+	meson: enable stack protector on freebsd and windows
+	Fedora 33 rawhide no longer successfully builds GTK-VNC on mingw using
+	fortify source, without also having stack protector flags enabled/
+
+2020-04-04  Mart Raudsepp  <leio@gentoo.org>
+
+	meson: Make introspection building controllable
+	The windows host checks are removed, as I don't think it's inherently
+	impossible to build with introspection for windows, and if a
+	particular windows build needs it disabled, it's controllable via
+	the option now.
+	Vala API build requires introspection - this is made explicit to
+	not end up with missing vapi files, despite asking for them.
+
+	meson: Add options to control pulseaudio and sasl dependencies
+
+2020-01-08  Daniel P. Berrangé  <berrange@redhat.com>
+
+	meson: drop x11 min version back further for Ubuntu 16.04
+
+2020-01-07  Daniel P. Berrangé  <berrange@redhat.com>
+
+	Relax min x11 dep for Debian 9 portability
+
+2020-01-06  Daniel P. Berrangé  <berrange@redhat.com>
+
+	Use a proper cond variable for accessing port from server thread
+	This avoids tickling the mutex deadlock detector on FreeBSD 12
+
+	Use meson's built-in werror option
+
+	Avoid deprecation warnings from G_TYPE_VALUE_ARRAY macro
+
+	Stop checking if threads are enabled in glib
+	Threading is unconditionally enabled these days.
+
+	Use g_main_loop_quit instead of g_main_quit
+
+	stop using deprecated g_type_class_add_private
+
+	meson: run syntax-check as part of test target
+
+	meson: use built-in support for source dist creation
+
+2019-09-25  Danial Behzadi  <dani.behzi@ubuntu.com>
+
+	Add Persian translation
+
+2019-08-22  Tom Schoonjans  <Tom.Schoonjans@diamond.ac.uk>
+
+	build: implement some macOS specific fixes
+	* Add some CPPFLAGS
+	* Ensure -Wl,--no-undefined is only used when supported, which is not
+	the case on macOS
+	* Add darwin_versions for correct versioning
+
+2019-08-22  Jan Tojnar  <jtojnar@gmail.com>
+
+	examples: fix dependencies
+	Without this, I am getting:
+
+	../examples/gvncviewer.c:34:10: fatal error: gio/gunixsocketaddress.h: No such file or directory
+	 #include <gio/gunixsocketaddress.h>
+	          ^~~~~~~~~~~~~~~~~~~~~~~~~~
+
 2019-08-07  Daniel P. Berrangé  <berrange@redhat.com>
 
 	Update NEWS for 1.0.0 release

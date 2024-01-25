@@ -21,6 +21,10 @@
 #ifndef _CONTINUATION_H_
 #define _CONTINUATION_H_
 
+#ifdef __APPLE__
+  #define _XOPEN_SOURCE 600
+#endif
+
 #include <ucontext.h>
 #include <stddef.h>
 
@@ -50,10 +54,3 @@ int cc_swap(struct continuation *from, struct continuation *to);
     (type *)(((char *)obj) - offset_of(type, member))
 
 #endif
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

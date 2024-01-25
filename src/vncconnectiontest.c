@@ -31,7 +31,8 @@ static gboolean debug;
 static gboolean allowfail;
 
 struct GVncTest {
-    GMutex lock;
+    GMutex portlock;
+    GCond portcond;
     GMutex clock;
     GCond cond;
     int port;
@@ -115,8 +116,10 @@ static gpointer test_helper_server(gpointer opaque)
 
     server = g_socket_listener_new();
 
+    g_mutex_lock(&data->portlock);
     data->port = g_socket_listener_add_any_inet_port(server, NULL, NULL);
-    g_mutex_unlock(&data->lock);
+    g_mutex_unlock(&data->portlock);
+    g_cond_signal(&data->portcond);
 
     client = g_socket_listener_accept(server, NULL, NULL, NULL);
 
@@ -245,7 +248,7 @@ static void test_helper_disconnected(VncConnection *conn G_GNUC_UNUSED,
                                      gpointer opaque)
 {
     struct GVncTest *test = opaque;
-    g_main_quit(test->loop);
+    g_main_loop_quit(test->loop);
 }
 
 static void test_helper_error(VncConnection *conn G_GNUC_UNUSED,
@@ -537,15 +540,18 @@ static void test_validation(void (*test_func)(GInputStream *, GOutputStream *))
     test = g_new0(struct GVncTest, 1);
     test->test_func = test_func;
 
-    g_mutex_init(&test->lock);
+    g_mutex_init(&test->portlock);
+    g_cond_init(&test->portcond);
     g_mutex_init(&test->clock);
     g_cond_init(&test->cond);
-    g_mutex_lock(&test->lock);
 
     th = g_thread_new("rre-server", test_helper_server, test);
 
-    g_mutex_lock(&test->lock);
+    g_mutex_lock(&test->portlock);
+    while (test->port == 0)
+        g_cond_wait(&test->portcond, &test->portlock);
     port = g_strdup_printf("%d", test->port);
+    g_mutex_unlock(&test->portlock);
 
     test->conn = vnc_connection_new();
 
@@ -628,10 +634,3 @@ int main(int argc, char **argv) {
 
     return g_test_run();
 }
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

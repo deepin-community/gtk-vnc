@@ -6,9 +6,8 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: gtk-vnc master\n"
-"Report-Msgid-Bugs-To: http://bugzilla.gnome.org/enter_bug.cgi?product=gtk-"
-"vnc&keywords=I18N+L10N&component=general\n"
-"POT-Creation-Date: 2013-12-19 14:05+0000\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2021-03-31 15:11+0100\n"
 "PO-Revision-Date: 2015-02-28 14:13-0430\n"
 "Last-Translator: Michael Ramírez <radical_michael@hotmail.com>\n"
 "Language-Team: Wayuunaiki\n"
@@ -18,14 +17,14 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: ../src/vncdisplay.c:167
+#: src/vncdisplay.c:175
 msgid "Enables debug output"
 msgstr "Activa la salida de depuración"
 
-#: ../src/vncdisplay.c:2542
+#: src/vncdisplay.c:3502
 msgid "GTK-VNC Options:"
 msgstr "Aneekiaa GTK-VNC:"
 
-#: ../src/vncdisplay.c:2542
+#: src/vncdisplay.c:3502
 msgid "Show GTK-VNC Options"
 msgstr "Ee'iyataa aneekiaa GTK-VNC"

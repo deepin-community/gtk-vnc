@@ -76,10 +76,3 @@ guint16 vnc_cursor_get_height(VncCursor *cursor);
 G_END_DECLS
 
 #endif /* VNC_CURSOR_H */
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

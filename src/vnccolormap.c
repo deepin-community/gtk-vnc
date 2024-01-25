@@ -134,9 +134,9 @@ gboolean vnc_color_map_set(VncColorMap *map,
  * vnc_color_map_lookup:
  * @map: the color map object
  * @idx: the index to set
- * @red: pointer to hold the red value
- * @green: pointer to hold the green value
- * @blue: pointer to hold the blue value
+ * @red: (out): pointer to hold the red value
+ * @green: (out): pointer to hold the green value
+ * @blue: (out): pointer to hold the blue value
  *
  * Lookup the RGB values associated with the
  * colour map entry at position @idx
@@ -158,11 +158,3 @@ gboolean vnc_color_map_lookup(VncColorMap *map,
 
     return TRUE;
 }
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

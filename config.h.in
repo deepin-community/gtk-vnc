@@ -1,4 +1,11 @@
 
+/* Enable compile-time and run-time bounds-checking, and some warnings,
+ * without upsetting newer glibc. */
+
+#if !defined _FORTIFY_SOURCE && defined __OPTIMIZE__ && __OPTIMIZE__
+# define _FORTIFY_SOURCE 2
+#endif
+
 /* Whether GIO UNIX is available */
 #mesondefine HAVE_GIOUNIX
 

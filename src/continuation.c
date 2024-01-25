@@ -80,10 +80,3 @@ int cc_swap(struct continuation *from, struct continuation *to)
 
     return swapcontext(&from->uc, &to->uc);
 }
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

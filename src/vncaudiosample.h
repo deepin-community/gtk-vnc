@@ -45,11 +45,3 @@ void vnc_audio_sample_free(VncAudioSample *sample);
 G_END_DECLS
 
 #endif /* VNC_AUDIO_SAMPLE_H */
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

@@ -6,9 +6,8 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: gtk-vnc master\n"
-"Report-Msgid-Bugs-To: https://bugzilla.gnome.org/enter_bug.cgi?product=gtk-"
-"vnc&keywords=I18N+L10N&component=general\n"
-"POT-Creation-Date: 2017-07-13 16:10+0000\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2021-03-31 15:11+0100\n"
 "PO-Revision-Date: 2015-05-26 21:17+0100\n"
 "Last-Translator: Nathan Follens <nthn@unseen.is>\n"
 "Language-Team: Dutch <gnome-nl-list@gnome.org>\n"
@@ -19,14 +18,14 @@ msgstr ""
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 "X-Generator: Poedit 1.5.4\n"
 
-#: ../src/vncdisplay.c:182
+#: src/vncdisplay.c:175
 msgid "Enables debug output"
 msgstr "Schakelt debug-uitvoer in"
 
-#: ../src/vncdisplay.c:3242
+#: src/vncdisplay.c:3502
 msgid "GTK-VNC Options:"
 msgstr "GTK-VNC-opties:"
 
-#: ../src/vncdisplay.c:3242
+#: src/vncdisplay.c:3502
 msgid "Show GTK-VNC Options"
 msgstr "Toon GTK-VNC-opties"

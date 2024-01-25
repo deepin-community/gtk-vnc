@@ -80,12 +80,15 @@ struct _VncConnectionClass
     void (*vnc_disconnected)(VncConnection *conn);
     void (*vnc_led_state)(VncConnection *conn);
     void (*vnc_error)(VncConnection *conn, const char *message);
+    void (*vnc_power_control_initialized)(VncConnection *conn);
+    void (*vnc_power_control_failed)(VncConnection *conn);
+    void (*vnc_desktop_rename)(VncConnection *conn, const char *name);
 
     /*
      * If adding fields to this struct, remove corresponding
      * amount of padding to avoid changing overall struct size
      */
-    gpointer _vnc_reserved[VNC_PADDING_LARGE - 2];
+    gpointer _vnc_reserved[VNC_PADDING_LARGE - 5];
 };
 
 
@@ -112,6 +115,7 @@ typedef enum {
 
     /* Pseudo encodings */
     VNC_CONNECTION_ENCODING_DESKTOP_RESIZE = -223,
+    VNC_CONNECTION_ENCODING_LAST_RECT = -224,
     VNC_CONNECTION_ENCODING_WMVi = 0x574D5669,
 
     VNC_CONNECTION_ENCODING_CURSOR_POS = -232,
@@ -122,8 +126,29 @@ typedef enum {
     VNC_CONNECTION_ENCODING_EXT_KEY_EVENT = -258,
     VNC_CONNECTION_ENCODING_AUDIO = -259,
     VNC_CONNECTION_ENCODING_LED_STATE = -261,
+
+    VNC_CONNECTION_ENCODING_DESKTOP_NAME = -307,
+    VNC_CONNECTION_ENCODING_EXTENDED_DESKTOP_RESIZE = -308,
+    VNC_CONNECTION_ENCODING_XVP = -309,
+    VNC_CONNECTION_ENCODING_ALPHA_CURSOR = -314,
 } VncConnectionEncoding;
 
+/**
+ * VncConnectionAuth:
+ * @VNC_CONNECTION_AUTH_INVALID:
+ * @VNC_CONNECTION_AUTH_NONE: No authentication is needed and protocol data is to be sent unencrypted.
+ * @VNC_CONNECTION_AUTH_VNC: VNC authentication is to be used and protocol data is to be sent unencrypted.
+ * @VNC_CONNECTION_AUTH_RA2: RealVNC authentication.
+ * @VNC_CONNECTION_AUTH_RA2NE: RealVNC authentication.
+ * @VNC_CONNECTION_AUTH_TIGHT: The Tight security type is a generic protocol extension.
+ * @VNC_CONNECTION_AUTH_ULTRA: Ultra authentication.
+ * @VNC_CONNECTION_AUTH_TLS: TLS authentication.
+ * @VNC_CONNECTION_AUTH_VENCRYPT: The VeNCrypt security type is a generic authentication method which encapsulates multiple authentication subtypes.
+ * @VNC_CONNECTION_AUTH_SASL: SASL authentication.
+ * @VNC_CONNECTION_AUTH_ARD: Apple remote desktop (screen sharing) authentication.
+ * @VNC_CONNECTION_AUTH_MSLOGONII: Authentication used by UltraVNC.
+ * @VNC_CONNECTION_AUTH_MSLOGON: Authentication used by UltraVNC.
+ */
 typedef enum {
     VNC_CONNECTION_AUTH_INVALID = 0,
     VNC_CONNECTION_AUTH_NONE = 1,
@@ -137,7 +162,7 @@ typedef enum {
     VNC_CONNECTION_AUTH_SASL = 20, /* SASL type used by VINO and QEMU */
     VNC_CONNECTION_AUTH_ARD = 30, /* Apple remote desktop (screen sharing) */
     VNC_CONNECTION_AUTH_MSLOGONII = 0x71, /* Used by UltraVNC */
-    VNC_CONNECTION_AUTH_MSLOGON = 0xfffffffa, /* Used by UltraVNC */
+    VNC_CONNECTION_AUTH_MSLOGON = 0xfffffffa, /* (aka 250 when converted to U8), Used by UltraVNC */
 } VncConnectionAuth;
 
 typedef enum {
@@ -157,6 +182,21 @@ typedef enum {
     VNC_CONNECTION_CREDENTIAL_USERNAME,
     VNC_CONNECTION_CREDENTIAL_CLIENTNAME,
 } VncConnectionCredential;
+
+typedef enum {
+    VNC_CONNECTION_POWER_ACTION_SHUTDOWN = 2,
+    VNC_CONNECTION_POWER_ACTION_REBOOT = 3,
+    VNC_CONNECTION_POWER_ACTION_RESET = 4,
+} VncConnectionPowerAction;
+
+typedef enum {
+    VNC_CONNECTION_RESIZE_STATUS_UNSUPPORTED = -1,
+    VNC_CONNECTION_RESIZE_STATUS_OK = 0,
+    VNC_CONNECTION_RESIZE_STATUS_ADMIN_PROHIBITED = 1,
+    VNC_CONNECTION_RESIZE_STATUS_OUT_OF_RESOURCES = 2,
+    VNC_CONNECTION_RESIZE_STATUS_INVALID_LAOUT = 3,
+    VNC_CONNECTION_RESIZE_STATUS_FORWARDED = 4,
+}  VncConnectionResizeStatus;
 
 GType vnc_connection_get_type(void) G_GNUC_CONST;
 
@@ -196,7 +236,7 @@ gboolean vnc_connection_set_pixel_format(VncConnection *conn,
 
 const VncPixelFormat *vnc_connection_get_pixel_format(VncConnection *conn);
 
-gboolean vnc_connection_set_shared(VncConnection *conn, gboolean sharedFlag);
+gboolean vnc_connection_set_shared(VncConnection *conn, gboolean shared);
 gboolean vnc_connection_get_shared(VncConnection *conn);
 
 gboolean vnc_connection_has_error(VncConnection *conn);
@@ -212,6 +252,7 @@ VncCursor *vnc_connection_get_cursor(VncConnection *conn);
 
 gboolean vnc_connection_get_abs_pointer(VncConnection *conn);
 gboolean vnc_connection_get_ext_key_event(VncConnection *conn);
+gboolean vnc_connection_get_power_control(VncConnection *conn);
 int vnc_connection_get_ledstate(VncConnection *conn);
 
 gboolean vnc_connection_set_audio(VncConnection *conn,
@@ -224,14 +265,12 @@ const VncAudioFormat *vnc_connection_get_audio_format(VncConnection *conn);
 gboolean vnc_connection_audio_enable(VncConnection *conn);
 gboolean vnc_connection_audio_disable(VncConnection *conn);
 
+gboolean vnc_connection_power_control(VncConnection *conn,
+                                      VncConnectionPowerAction action);
+
+VncConnectionResizeStatus vnc_connection_set_size(VncConnection *conn,
+                                                  guint width, guint height);
 
 G_END_DECLS
 
 #endif /* VNC_CONNECTION_H */
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

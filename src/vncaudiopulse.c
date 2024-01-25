@@ -28,15 +28,12 @@
 #include "vncaudiopulse.h"
 #include "vncutil.h"
 
-#define VNC_AUDIO_PULSE_GET_PRIVATE(obj)                                \
-    (G_TYPE_INSTANCE_GET_PRIVATE((obj), VNC_TYPE_AUDIO_PULSE, VncAudioPulsePrivate))
-
 struct _VncAudioPulsePrivate {
     pa_simple *pa;
 };
 
 
-G_DEFINE_TYPE(VncAudioPulse, vnc_audio_pulse, VNC_TYPE_BASE_AUDIO);
+G_DEFINE_TYPE_WITH_PRIVATE(VncAudioPulse, vnc_audio_pulse, VNC_TYPE_BASE_AUDIO);
 
 
 static gboolean vnc_audio_pulse_playback_start(VncAudio *audio,
@@ -133,24 +130,20 @@ static void vnc_audio_pulse_class_init(VncAudioPulseClass *klass)
     GObjectClass *object_class = G_OBJECT_CLASS (klass);
 
     object_class->finalize = vnc_audio_pulse_finalize;
-
-    g_type_class_add_private(klass, sizeof(VncAudioPulsePrivate));
 }
 
 
-void vnc_audio_pulse_init(VncAudioPulse *fb)
+void vnc_audio_pulse_init(VncAudioPulse *audio)
 {
-    VncAudioPulsePrivate *priv;
+    VncAudioPulsePrivate *priv = vnc_audio_pulse_get_instance_private(audio);
 
-    priv = fb->priv = VNC_AUDIO_PULSE_GET_PRIVATE(fb);
+    audio->priv = priv;
 
-    memset(priv, 0, sizeof(*priv));
-
-    g_signal_connect(G_OBJECT(fb), "vnc-audio-playback-start",
+    g_signal_connect(G_OBJECT(audio), "vnc-audio-playback-start",
                      G_CALLBACK(vnc_audio_pulse_playback_start), NULL);
-    g_signal_connect(G_OBJECT(fb), "vnc-audio-playback-stop",
+    g_signal_connect(G_OBJECT(audio), "vnc-audio-playback-stop",
                      G_CALLBACK(vnc_audio_pulse_playback_stop), NULL);
-    g_signal_connect(G_OBJECT(fb), "vnc-audio-playback-data",
+    g_signal_connect(G_OBJECT(audio), "vnc-audio-playback-data",
                      G_CALLBACK(vnc_audio_pulse_playback_data), NULL);
 }
 
@@ -168,12 +161,3 @@ VncAudioPulse *vnc_audio_pulse_new(void)
     return VNC_AUDIO_PULSE(g_object_new(VNC_TYPE_AUDIO_PULSE,
                                         NULL));
 }
-
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

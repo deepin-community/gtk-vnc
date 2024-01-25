@@ -82,12 +82,17 @@
 	vnc_connection_auth_get_type;
 	vnc_connection_auth_vencrypt_get_type;
 	vnc_connection_credential_get_type;
+	vnc_connection_power_action_get_type;
+	vnc_connection_resize_status_get_type;
 	vnc_connection_audio_enable;
 	vnc_connection_audio_disable;
 	vnc_connection_set_audio_format;
 	vnc_connection_get_audio_format;
 	vnc_connection_set_audio;
 	vnc_connection_get_ledstate;
+	vnc_connection_get_power_control;
+	vnc_connection_power_control;
+	vnc_connection_set_size;
 
 	vnc_util_set_debug;
 	vnc_util_get_debug;
@@ -99,6 +104,7 @@
 	vnc_pixel_format_copy;
 	vnc_pixel_format_free;
 	vnc_pixel_format_get_type;
+	vnc_pixel_format_match;
 
     local:
 	*;

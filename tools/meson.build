@@ -4,6 +4,8 @@ gvnccapture = executable(
   'gvnccapture',
   dependencies: [gvnc_dep],
   sources: ['gvnccapture.c'],
+  c_args: warning_cflags + gvnc_version_check_flags,
+  link_args: warning_ldflags,
   install: true,
   install_dir: gtk_vnc_bindir,
 )

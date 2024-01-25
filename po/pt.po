@@ -7,9 +7,8 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: gtk-vnc master\n"
-"Report-Msgid-Bugs-To: http://bugzilla.gnome.org/enter_bug.cgi?product=gtk-"
-"vnc&keywords=I18N+L10N&component=general\n"
-"POT-Creation-Date: 2013-12-19 14:05+0000\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2021-03-31 15:11+0100\n"
 "PO-Revision-Date: 2015-05-28 06:49+0100\n"
 "Last-Translator: Pedro Albuquerque <palbuquerque73@openmailbox.com>\n"
 "Language-Team: Português <palbuquerque73@openmailbox.com>\n"
@@ -20,71 +19,14 @@ msgstr ""
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 "X-Generator: Gtranslator 2.91.6\n"
 
-#: ../src/vncdisplay.c:167
+#: src/vncdisplay.c:175
 msgid "Enables debug output"
 msgstr "Ativa saída de depuração"
 
-#: ../src/vncdisplay.c:2542
+#: src/vncdisplay.c:3502
 msgid "GTK-VNC Options:"
 msgstr "Opções de GTK-VNC:"
 
-#: ../src/vncdisplay.c:2542
+#: src/vncdisplay.c:3502
 msgid "Show GTK-VNC Options"
 msgstr "Mostrar opções de GTK-VNC"
-
-#~ msgid "Address family for hostname not supported"
-#~ msgstr "Família de endereço para o nome de máquina não suportada"
-
-#~ msgid "Temporary failure in name resolution"
-#~ msgstr "Falha temporária na resolução de nome"
-
-#~ msgid "Bad value for ai_flags"
-#~ msgstr "Valor inválido para ai_flags"
-
-#~ msgid "Non-recoverable failure in name resolution"
-#~ msgstr "Falha não recuperável na resolução de nome"
-
-#~ msgid "ai_family not supported"
-#~ msgstr "ai_family não suportada"
-
-#~ msgid "Memory allocation failure"
-#~ msgstr "Falha de alocação de memória"
-
-#~ msgid "No address associated with hostname"
-#~ msgstr "Nenhum endereço associado com o nome de máquina"
-
-#~ msgid "Name or service not known"
-#~ msgstr "Nome ou serviço desconhecido"
-
-#~ msgid "Servname not supported for ai_socktype"
-#~ msgstr "Nome de servidor não suportado para ai_socktype"
-
-#~ msgid "ai_socktype not supported"
-#~ msgstr "ai_socktype não suportado"
-
-#~ msgid "System error"
-#~ msgstr "Erro de sistema"
-
-#~ msgid "Argument buffer too small"
-#~ msgstr "Argumento de buffer muito pequeno"
-
-#~ msgid "Processing request in progress"
-#~ msgstr "Processamento do pedido em progresso"
-
-#~ msgid "Request canceled"
-#~ msgstr "Pedido cancelado"
-
-#~ msgid "Request not canceled"
-#~ msgstr "Pedido não cancelado"
-
-#~ msgid "All requests done"
-#~ msgstr "Todos os pedidos terminados"
-
-#~ msgid "Interrupted by a signal"
-#~ msgstr "Interrompido por um sinal"
-
-#~ msgid "Parameter string not correctly encoded"
-#~ msgstr "Expressão de parâmetro não codificada correctamente"
-
-#~ msgid "Unknown error"
-#~ msgstr "Erro desconhecido"

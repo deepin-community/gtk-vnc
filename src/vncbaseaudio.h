@@ -63,11 +63,3 @@ VncBaseAudio *vnc_base_audio_new(void);
 G_END_DECLS
 
 #endif /* VNC_BASE_AUDIO_H */
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  indent-tabs-mode: nil
- * End:
- */

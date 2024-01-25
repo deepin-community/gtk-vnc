@@ -37,6 +37,14 @@ gvnc_enum_sources_dep = declare_dependency(
   sources: gvnc_enum_sources
 )
 
+version_data = configuration_data()
+version_data.set('VNC_MAJOR_VERSION', version_major)
+version_data.set('VNC_MINOR_VERSION', version_minor)
+version_data.set('VNC_MICRO_VERSION', version_micro)
+gvnc_version_header = configure_file(input : 'vncversion.h.in',
+                                     output : 'vncversion.h',
+                                     configuration : version_data)
+
 gvnc_headers = [
   'gvnc.h',
   'vncpixelformat.h',
@@ -52,11 +60,12 @@ gvnc_headers = [
   'vncutil.h',
 ]
 
-install_headers(gvnc_headers, subdir: 'gvnc-1.0')
+install_headers(gvnc_headers + [gvnc_version_header], subdir: 'gvnc-1.0')
 
 gvnc_gir_sources = gvnc_headers + [
   gvnc_enum_headers,
   gvnc_enum_sources,
+  gvnc_version_header,
   'vncpixelformat.c',
   'vncaudioformat.c',
   'vncaudiosample.c',
@@ -89,14 +98,13 @@ else
 endif
 
 gvnc_link_args = []
-if host_machine.system() != 'windows'
+if meson.get_compiler('c').has_link_argument('-Wl,--no-undefined')
   gvnc_link_args += ['-Wl,--no-undefined']
 endif
 
+gvnc_syms = join_paths(meson.current_source_dir(), 'libgvnc_sym.version')
 if host_machine.system() == 'linux'
-  gvnc_link_args += ['-Wl,--version-script,@0@/@1@'.format(
-    meson.current_source_dir(), 'libgvnc_sym.version')
-]
+  gvnc_link_args += ['-Wl,--version-script,' + gvnc_syms]
 endif
 
 gvnc_deps = [
@@ -121,8 +129,11 @@ gvnc = library(
   sources: gvnc_sources,
   dependencies: gvnc_deps,
   include_directories: gvnc_inc,
-  link_args: gvnc_link_args,
+  c_args: warning_cflags + gvnc_version_check_flags,
+  link_args: warning_ldflags + gvnc_link_args,
+  link_depends: gvnc_syms,
   version: '0.0.1',
+  darwin_versions: ['1.0', '1.1'],
   soversion: '0',
   install: true,
 )
@@ -134,7 +145,7 @@ gvnc_dep = declare_dependency(
   include_directories: gvnc_inc,
 )
 
-if host_machine.system() != 'windows'
+if with_gir
   gvnc_gir = gnome.generate_gir(
     gvnc,
     sources: gvnc_gir_sources,
@@ -178,14 +189,13 @@ if libpulse_dep.found()
   ]
 
   gvncpulse_link_args = []
-  if host_machine.system() != 'windows'
+  if meson.get_compiler('c').has_link_argument('-Wl,--no-undefined')
     gvncpulse_link_args += ['-Wl,--no-undefined']
   endif
 
+  gvncpulse_syms = join_paths(meson.current_source_dir(), 'libgvncpulse_sym.version')
   if host_machine.system() == 'linux'
-    gvncpulse_link_args += ['-Wl,--version-script,@0@/@1@'.format(
-      meson.current_source_dir(), 'libgvncpulse_sym.version')
-  ]
+    gvncpulse_link_args += ['-Wl,--version-script,' + gvncpulse_syms]
   endif
 
   gvncpulse_deps = [
@@ -204,8 +214,11 @@ if libpulse_dep.found()
     sources: gvncpulse_sources,
     dependencies: gvncpulse_deps,
     include_directories: gvncpulse_inc,
-    link_args: gvncpulse_link_args,
+    c_args: warning_cflags + gvnc_version_check_flags,
+    link_args: warning_ldflags + gvncpulse_link_args,
+    link_depends: gvncpulse_syms,
     version: '0.0.1',
+    darwin_versions: ['1.0', '1.1'],
     soversion: '0',
     install: true,
   )
@@ -216,14 +229,14 @@ if libpulse_dep.found()
     include_directories: gvncpulse_inc,
   )
 
-  if host_machine.system() != 'windows'
+  if with_gir
     gvncpulse_gir = gnome.generate_gir(
       gvncpulse,
       sources: gvncpulse_sources,
       nsversion: '1.0',
       namespace: 'GVncPulse',
       export_packages: 'gvncpulse-1.0',
-      includes: ['GObject-2.0', 'GVnc-1.0'],
+      includes: ['GObject-2.0', gvnc_gir[0]],
       dependencies: gvncpulse_deps + [gvnc_gir_dep],
       header: 'gvncpulse.h',
       identifier_prefix: 'Vnc',
@@ -306,7 +319,7 @@ gtk_vnc_sources = gtk_vnc_gir_sources + gvnc_marshal + [
   'vncdisplaykeymap.c',
 ]
 
-python = import('python').find_installation()
+python = import('python').find_installation('python3')
 keymaps = [
   'xorgevdev',
   'xorgkbd',
@@ -323,9 +336,10 @@ foreach keymap: keymaps
   cmd = [
     python,
     keymapgen,
+    'code-map',
     '--lang', 'glib2',
     '--varname', varname,
-    'code-map', keymapcsv, keymap, 'qnum'
+    keymapcsv, keymap, 'qnum'
   ]
   gtk_vnc_sources += custom_target(
     target,
@@ -337,17 +351,17 @@ endforeach
 
 
 gtk_vnc_link_args = []
-if host_machine.system() != 'windows'
+if meson.get_compiler('c').has_link_argument('-Wl,--no-undefined')
   gtk_vnc_link_args += ['-Wl,--no-undefined']
 endif
 
+gtk_vnc_syms = join_paths(meson.current_source_dir(), 'libgtk-vnc_sym.version')
 if host_machine.system() == 'linux'
-  gtk_vnc_link_args += ['-Wl,--version-script,@0@/@1@'.format(
-    meson.current_source_dir(), 'libgtk-vnc_sym.version')
-]
+  gtk_vnc_link_args += ['-Wl,--version-script,' + gtk_vnc_syms]
 endif
 
 gtk_vnc_deps = [
+  libm_dep,
   gtk_dep,
   gvnc_dep,
   gtk_vnc_enum_headers_dep,
@@ -367,8 +381,11 @@ gtk_vnc = library(
   sources: gtk_vnc_sources,
   dependencies: gtk_vnc_deps,
   include_directories: gtk_vnc_inc,
-  link_args: gtk_vnc_link_args,
+  c_args: warning_cflags + gtk_vnc_version_check_flags,
+  link_args: warning_ldflags + gtk_vnc_link_args,
+  link_depends: gtk_vnc_syms,
   version: '0.0.2',
+  darwin_versions: ['1.0', '1.2'],
   soversion: '0',
   install: true,
 )
@@ -379,14 +396,14 @@ gtk_vnc_dep = declare_dependency(
   include_directories: gtk_vnc_inc,
 )
 
-if host_machine.system() != 'windows'
+if with_gir
   gtk_vnc_gir = gnome.generate_gir(
     gtk_vnc,
     sources: gtk_vnc_gir_sources,
     nsversion: '2.0',
     namespace: 'GtkVnc',
     export_packages: 'gtk-vnc-2.0',
-    includes: ['GObject-2.0', 'Gtk-3.0', 'GVnc-1.0'],
+    includes: ['GObject-2.0', 'Gtk-3.0', gvnc_gir[0]],
     dependencies: gtk_vnc_deps + [gvnc_gir_dep],
     header: 'gtk-vnc.h',
     identifier_prefix: 'Vnc',
